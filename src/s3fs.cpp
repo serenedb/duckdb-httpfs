@@ -254,7 +254,8 @@ void S3AuthParams::SetRegion(string new_region) {
 
 unique_ptr<KeyValueSecret> CreateSecret(vector<string> &prefix_paths_p, string &type, string &provider, string &name,
                                         S3AuthParams &params) {
-	auto return_value = make_uniq<KeyValueSecret>(prefix_paths_p, Identifier(type), Identifier(provider), Identifier(name));
+	auto return_value =
+	    make_uniq<KeyValueSecret>(prefix_paths_p, Identifier(type), Identifier(provider), Identifier(name));
 
 	//! Set key value map
 	return_value->secret_map["region"] = params.region;
@@ -1268,7 +1269,8 @@ string S3FileSystem::GetS3AuthError(const S3AuthParams &s3_auth_params) {
 	} else {
 		extra_text += "\n* Credentials are provided, but they did not work.";
 	}
-	extra_text += "\n* See https://duckdb.org/docs/stable/extensions/httpfs/s3api.html";
+	extra_text += "\n* Configure credentials with CREATE SECRET (TYPE S3, key_id 'your-key', secret 'your-secret', "
+	              "region 'your-region').";
 	return extra_text;
 }
 
