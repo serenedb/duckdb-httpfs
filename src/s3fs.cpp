@@ -1268,7 +1268,8 @@ string S3FileSystem::GetS3AuthError(const S3AuthParams &s3_auth_params) {
 	} else {
 		extra_text += "\n* Credentials are provided, but they did not work.";
 	}
-	extra_text += "\n* See https://duckdb.org/docs/stable/extensions/httpfs/s3api.html";
+	extra_text += "\n* Configure credentials with CREATE SECRET (TYPE S3, key_id 'your-key', secret 'your-secret', "
+	              "region 'your-region').";
 	return extra_text;
 }
 
