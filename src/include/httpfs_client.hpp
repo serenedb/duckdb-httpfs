@@ -11,9 +11,9 @@ namespace duckdb {
 class HTTPFSInfoLogType : public LogType {
 public:
 	static constexpr const char *NAME = "HTTPFSInfo";
-	static constexpr LogLevel LEVEL = LogLevel::LOG_INFO;
+	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
 
-	HTTPFSInfoLogType() : LogType(NAME, LogLevel::LOG_INFO) {
+	HTTPFSInfoLogType() : LogType(NAME, LEVEL) {
 	}
 
 	static string ConstructLogMessage(const string &type, const string &host, const string &payload = "") {
