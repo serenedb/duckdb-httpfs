@@ -187,8 +187,8 @@ bool CreateS3SecretFunctions::TryRefreshS3Secret(ClientContext &context, const S
 		auto res = secret_manager.CreateSecret(context, refresh_input);
 		auto &new_secret = res->secret->Cast<KeyValueSecret>();
 		if (SecretCredentialMaterialChanged(kv_secret, new_secret)) {
-			DUCKDB_LOG_INFO(context, "Successfully refreshed secret: %s, new key_id: %s",
-			                secret_to_refresh.secret->GetName(), new_secret.TryGetValue("key_id").ToString());
+			DUCKDB_LOG_DEBUG(context, "Successfully refreshed secret: %s, new key_id: %s",
+			                 secret_to_refresh.secret->GetName(), new_secret.TryGetValue("key_id").ToString());
 		}
 		return true;
 	} catch (std::exception &ex) {

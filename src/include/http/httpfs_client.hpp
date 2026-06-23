@@ -9,7 +9,7 @@ namespace duckdb {
 
 class HTTPFSInfoLogType : public LogType {
 public:
-	HTTPFSInfoLogType() : LogType(NAME, LogLevel::LOG_INFO) {
+	HTTPFSInfoLogType() : LogType(NAME, LEVEL) {
 	}
 
 public:
@@ -22,7 +22,7 @@ public:
 
 public:
 	static constexpr const char *NAME = "HTTPFSInfo";
-	static constexpr LogLevel LEVEL = LogLevel::LOG_INFO;
+	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
 };
 class HTTPLogger;
 class FileOpener;
