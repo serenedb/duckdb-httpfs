@@ -254,6 +254,16 @@ public:
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
 
 		const idx_t bytes_received = request_info->body.size();
+
+		//  libcurl reports latency via CURLINFO_STARTTRANSFER_TIME
+		info.bytes_received = bytes_received;
+		double starttransfer_seconds = 0;
+		if (curl_easy_getinfo(*curl, CURLINFO_STARTTRANSFER_TIME, &starttransfer_seconds) == CURLE_OK &&
+		    starttransfer_seconds > 0) {
+			info.have_time_to_fst_byte = true;
+			info.time_to_fst_byte_sec = starttransfer_seconds;
+		}
+
 		if (!request_info->header_collection.empty() &&
 		    request_info->header_collection.back().HasHeader("content-length")) {
 			try {
@@ -410,6 +420,34 @@ public:
 		}
 
 		// Get HTTP response status code
+		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
+		return TransformResponseCurl(res);
+	}
+
+	unique_ptr<HTTPResponse> Options(OptionsRequestInfo &info) override {
+		ResetRequestInfo();
+		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
+		request_info->url = info.url;
+
+		CURLcode res;
+		{
+			CURLU *url = curl_url_dup(curl_base_url);
+
+			string normalized_path = NormalizePathToBeAdded(info.path);
+			curl_url_set(url, CURLUPART_URL, normalized_path.c_str(), 0);
+
+			curl_easy_setopt(*curl, CURLOPT_URL, nullptr);
+			curl_easy_setopt(*curl, CURLOPT_CURLU, url);
+
+			curl_easy_setopt(*curl, CURLOPT_CUSTOMREQUEST, "OPTIONS");
+
+			curl_easy_setopt(*curl, CURLOPT_HTTPHEADER, curl_headers ? curl_headers.headers : nullptr);
+
+			res = curl->Execute();
+			curl_easy_setopt(*curl, CURLOPT_CUSTOMREQUEST, nullptr);
+			curl_url_cleanup(url);
+		}
+
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
 		return TransformResponseCurl(res);
 	}

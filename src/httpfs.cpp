@@ -373,6 +373,18 @@ unique_ptr<HTTPResponse> HTTPFileSystem::GetRangeRequest(FileHandle &handle, str
 	auto response = http_util.Request(get_request, http_client);
 
 	hfh.StoreClient(std::move(http_client));
+
+	// Feed the prefetch cost model a network measurement for this ranged GET
+	if (response && (response->Success() || response->status == HTTPStatusCode::PartialContent_206 ||
+	                 response->status == HTTPStatusCode::Accepted_202)) {
+		double total_seconds = 0;
+		if (get_request.request_end.value > get_request.request_start.value) {
+			total_seconds = static_cast<double>(get_request.request_end.value - get_request.request_start.value) / 1e6;
+		}
+		const idx_t bytes = get_request.bytes_received != 0 ? get_request.bytes_received : buffer_out_len;
+		hfh.RecordNetworkSample(total_seconds, bytes, get_request.have_time_to_fst_byte,
+		                        get_request.time_to_fst_byte_sec);
+	}
 	return response;
 }
 
@@ -470,7 +482,39 @@ unique_ptr<FileHandle> HTTPFileSystem::OpenFileExtended(const OpenFileInfo &file
 }
 
 void HTTPFileHandle::AddStatistics(idx_t read_offset, idx_t read_length, idx_t read_duration) {
+	lock_guard<mutex> guard(throughput_lock);
 	range_request_statistics.push_back({read_offset, read_length, read_duration});
+}
+
+void HTTPFileHandle::RecordNetworkSample(double total_seconds, idx_t bytes, bool sample_has_ttfb, double ttfb_seconds) {
+	if (!(total_seconds > 0)) {
+		return;
+	}
+	lock_guard<mutex> guard(throughput_lock);
+	const idx_t n = tp_sample_count + 1;
+	const double alpha = MaxValue<double>(0.2, 1.0 / static_cast<double>(n));
+
+	if (sample_has_ttfb && ttfb_seconds > 0) {
+		tp_latency_seconds =
+		    tp_latency_seconds <= 0 ? ttfb_seconds : alpha * ttfb_seconds + (1.0 - alpha) * tp_latency_seconds;
+	}
+
+	const double transfer_seconds = sample_has_ttfb ? (total_seconds - ttfb_seconds) : total_seconds;
+	if (bytes >= MIN_BANDWIDTH_SAMPLE_BYTES && transfer_seconds > 0) {
+		const double bandwidth = static_cast<double>(bytes) / transfer_seconds;
+		tp_bandwidth_bps = tp_bandwidth_bps <= 0 ? bandwidth : alpha * bandwidth + (1.0 - alpha) * tp_bandwidth_bps;
+	}
+	tp_sample_count = n;
+}
+
+bool HTTPFileHandle::TryGetNetworkThroughput(NetworkThroughputEstimate &result) {
+	lock_guard<mutex> guard(throughput_lock);
+	if (tp_sample_count == 0 || tp_latency_seconds <= 0 || tp_bandwidth_bps <= 0) {
+		return false;
+	}
+	result.latency_seconds = tp_latency_seconds;
+	result.bandwidth_bytes_per_s = tp_bandwidth_bps;
+	return true;
 }
 
 void HTTPFileHandle::AdaptReadBufferSize(idx_t next_read_offset) {
