@@ -1,5 +1,5 @@
 #include "s3fs.hpp"
-#include "crypto.hpp"
+#include "hash_functions.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/logging/log_type.hpp"
@@ -26,9 +26,9 @@
 
 namespace duckdb {
 
-HTTPHeaders CreateS3Header(string url, string query, string host, string service, string method,
-                           const S3AuthParams &auth_params, string date_now, string datetime_now, string payload_hash,
-                           string content_type, string content_md5) {
+HTTPHeaders CreateS3Header(EncryptionUtil &encryption_util, string url, string query, string host, string service,
+                           string method, const S3AuthParams &auth_params, string date_now, string datetime_now,
+                           string payload_hash, string content_type, string content_md5) {
 
 	HTTPHeaders res;
 	res["Host"] = host;
@@ -112,7 +112,7 @@ HTTPHeaders CreateS3Header(string url, string query, string host, string service
 
 	canonical_request += "\n\n" + signed_headers + "\n" + payload_hash;
 
-	sha256(canonical_request.c_str(), canonical_request.length(), canonical_request_hash);
+	sha256(encryption_util, canonical_request.c_str(), canonical_request.length(), canonical_request_hash);
 
 	hex256(canonical_request_hash, canonical_request_hash_str);
 	auto string_to_sign = "AWS4-HMAC-SHA256\n" + datetime_now + "\n" + date_now + "/" + auth_params.region + "/" +
@@ -121,11 +121,11 @@ HTTPHeaders CreateS3Header(string url, string query, string host, string service
 	hash_bytes k_date, k_region, k_service, signing_key, signature;
 	hash_str signature_str;
 	auto sign_key = "AWS4" + auth_params.secret_access_key;
-	hmac256(date_now, sign_key.c_str(), sign_key.length(), k_date);
-	hmac256(auth_params.region, k_date, k_region);
-	hmac256(service, k_region, k_service);
-	hmac256("aws4_request", k_service, signing_key);
-	hmac256(string_to_sign, signing_key, signature);
+	hmac256(encryption_util, date_now, sign_key.c_str(), sign_key.length(), k_date);
+	hmac256(encryption_util, auth_params.region, k_date, k_region);
+	hmac256(encryption_util, service, k_region, k_service);
+	hmac256(encryption_util, "aws4_request", k_service, signing_key);
+	hmac256(encryption_util, string_to_sign, signing_key, signature);
 	hex256(signature, signature_str);
 
 	res["Authorization"] = "AWS4-HMAC-SHA256 Credential=" + auth_params.access_key_id + "/" + date_now + "/" +
@@ -513,11 +513,19 @@ ParsedS3Url S3FileSystem::S3UrlParse(string url, const S3AuthParams &params) {
 	return {http_proto, prefix, host, bucket, key, path, query_param, trimmed_s3_url};
 }
 
+EncryptionUtil &S3FileSystem::GetEncryptionUtil() {
+	auto &config = DBConfig::GetConfig(buffer_manager.GetDatabase());
+	if (!config.encryption_util) {
+		throw InternalException("HTTPFS encryption util has not been initialized");
+	}
+	return *config.encryption_util;
+}
+
 string S3FileSystem::GetPayloadHash(char *buffer, idx_t buffer_len) {
 	if (buffer_len > 0) {
 		hash_bytes payload_hash_bytes;
 		hash_str payload_hash_str;
-		sha256(buffer, buffer_len, payload_hash_bytes);
+		sha256(GetEncryptionUtil(), buffer, buffer_len, payload_hash_bytes);
 		hex256(payload_hash_bytes, payload_hash_str);
 		return string((char *)payload_hash_str, sizeof(payload_hash_str));
 	} else {
@@ -550,8 +558,8 @@ unique_ptr<HTTPResponse> S3FileSystem::PostRequest(HTTPInput &input, string url,
 	} else {
 		// Use existing S3 authentication
 		auto payload_hash = GetPayloadHash(buffer_in, buffer_in_len);
-		headers = CreateS3Header(parsed_s3_url.path, http_params, parsed_s3_url.host, "s3", "POST", auth_params, "", "",
-		                         payload_hash, "application/octet-stream");
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, http_params, parsed_s3_url.host, "s3", "POST",
+		                         auth_params, "", "", payload_hash, "application/octet-stream");
 	}
 
 	return HTTPFileSystem::PostRequest(input, http_url, headers, result, buffer_in, buffer_in_len);
@@ -574,8 +582,8 @@ unique_ptr<HTTPResponse> S3FileSystem::PutRequest(HTTPInput &input, string url, 
 	} else {
 		// Use existing S3 authentication
 		auto payload_hash = GetPayloadHash(buffer_in, buffer_in_len);
-		headers = CreateS3Header(parsed_s3_url.path, http_params, parsed_s3_url.host, "s3", "PUT", auth_params, "", "",
-		                         payload_hash, content_type);
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, http_params, parsed_s3_url.host, "s3", "PUT",
+		                         auth_params, "", "", payload_hash, content_type);
 	}
 
 	return HTTPFileSystem::PutRequest(input, http_url, headers, buffer_in, buffer_in_len);
@@ -593,7 +601,8 @@ unique_ptr<HTTPResponse> S3FileSystem::HeadRequest(FileHandle &handle, string s3
 		headers["Host"] = parsed_s3_url.host;
 	} else {
 		// Use existing S3 authentication
-		headers = CreateS3Header(parsed_s3_url.path, "", parsed_s3_url.host, "s3", "HEAD", auth_params, "", "", "", "");
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, "", parsed_s3_url.host, "s3", "HEAD",
+		                         auth_params, "", "", "", "");
 	}
 
 	return HTTPFileSystem::HeadRequest(handle, http_url, headers);
@@ -618,8 +627,8 @@ unique_ptr<HTTPResponse> S3FileSystem::GetRequest(FileHandle &handle, string s3_
 		headers["Host"] = parsed_s3_url.host;
 	} else {
 		// Use existing S3 authentication
-		headers = CreateS3Header(parsed_s3_url.path, query_string, parsed_s3_url.host, "s3", "GET", auth_params, "", "",
-		                         "", "");
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, query_string, parsed_s3_url.host, "s3", "GET",
+		                         auth_params, "", "", "", "");
 	}
 
 	return HTTPFileSystem::GetRequest(handle, http_url, headers);
@@ -645,8 +654,8 @@ unique_ptr<HTTPResponse> S3FileSystem::GetRangeRequest(FileHandle &handle, strin
 		headers["Host"] = parsed_s3_url.host;
 	} else {
 		// Use existing S3 authentication
-		headers = CreateS3Header(parsed_s3_url.path, query_string, parsed_s3_url.host, "s3", "GET", auth_params, "", "",
-		                         "", "");
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, query_string, parsed_s3_url.host, "s3", "GET",
+		                         auth_params, "", "", "", "");
 	}
 
 	return HTTPFileSystem::GetRangeRequest(handle, http_url, headers, file_offset, buffer_out, buffer_out_len);
@@ -664,8 +673,8 @@ unique_ptr<HTTPResponse> S3FileSystem::DeleteRequest(FileHandle &handle, string 
 		headers["Host"] = parsed_s3_url.host;
 	} else {
 		// Use existing S3 authentication
-		headers =
-		    CreateS3Header(parsed_s3_url.path, "", parsed_s3_url.host, "s3", "DELETE", auth_params, "", "", "", "");
+		headers = CreateS3Header(GetEncryptionUtil(), parsed_s3_url.path, "", parsed_s3_url.host, "s3", "DELETE",
+		                         auth_params, "", "", "", "");
 	}
 
 	return HTTPFileSystem::DeleteRequest(handle, http_url, headers);
@@ -871,8 +880,9 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 			const string http_query_param_for_url = "delete";
 			auto payload_hash = GetPayloadHash(const_cast<char *>(body.data()), body.length());
 
-			auto headers = CreateS3Header(url_info.path, http_query_param_for_sig, url_info.host, "s3", "POST",
-			                              url_info.auth_params, "", "", payload_hash, "application/xml", content_md5);
+			auto headers =
+			    CreateS3Header(GetEncryptionUtil(), url_info.path, http_query_param_for_sig, url_info.host, "s3",
+			                   "POST", url_info.auth_params, "", "", payload_hash, "application/xml", content_md5);
 
 			string http_url = url_info.http_proto + url_info.host + S3FileSystem::UrlEncode(url_info.path) + "?" +
 			                  http_query_param_for_url;
@@ -992,12 +1002,13 @@ enum GlobType { HIERARCHICAL, LISTING, UNKNOWN };
 
 struct S3GlobResult : public LazyMultiFileList {
 public:
-	S3GlobResult(S3FileSystem &fs, const string &path, optional_ptr<FileOpener> opener);
+	S3GlobResult(S3FileSystem &fs_p, const string &path, optional_ptr<FileOpener> opener);
 
 protected:
 	bool ExpandNextPath() const override;
 
 private:
+	S3FileSystem &fs;
 	string glob_pattern;
 	optional_ptr<FileOpener> opener;
 	mutable bool finished = false;
@@ -1011,8 +1022,9 @@ private:
 	mutable GlobType glob_type {UNKNOWN};
 };
 
-S3GlobResult::S3GlobResult(S3FileSystem &fs, const string &glob_pattern_p, optional_ptr<FileOpener> opener)
-    : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), glob_pattern(glob_pattern_p), opener(opener) {
+S3GlobResult::S3GlobResult(S3FileSystem &fs_p, const string &glob_pattern_p, optional_ptr<FileOpener> opener)
+    : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), fs(fs_p), glob_pattern(glob_pattern_p),
+      opener(opener) {
 	if (!opener) {
 		throw InternalException("Cannot S3 Glob without FileOpener");
 	}
@@ -1065,8 +1077,8 @@ bool S3GlobResult::ExpandNextPath() const {
 		    Match(key_splits.begin(), key_splits.end(), pattern_splits.begin(), pattern_splits.end(), false);
 		if (is_match) {
 			prefix_path = S3FileSystem::UrlDecode(prefix_path);
-			auto prefix_res = AWSListObjectV2::Request(prefix_path, *http_params, s3_auth_params,
-			                                           common_prefix_continuation_token, true);
+			auto prefix_res = AWSListObjectV2::Request(fs.GetEncryptionUtil(), prefix_path, *http_params,
+			                                           s3_auth_params, common_prefix_continuation_token, true);
 
 			AWSListObjectV2::ParseFileList(prefix_res, s3_keys);
 			auto more_prefixes = AWSListObjectV2::ParseCommonPrefix(prefix_res);
@@ -1105,8 +1117,8 @@ bool S3GlobResult::ExpandNextPath() const {
 		bool perform_listing = (glob_type != GlobType::HIERARCHICAL);
 
 		// First perform listing once (default will get back up to 1000 elements)
-		string response_str = AWSListObjectV2::Request(shared_path, *http_params, s3_auth_params,
-		                                               main_continuation_token, !perform_listing);
+		string response_str = AWSListObjectV2::Request(fs.GetEncryptionUtil(), shared_path, *http_params,
+		                                               s3_auth_params, main_continuation_token, !perform_listing);
 
 		string next_continuation_token = AWSListObjectV2::ParseContinuationToken(response_str);
 
@@ -1136,8 +1148,8 @@ bool S3GlobResult::ExpandNextPath() const {
 				// 1. clear keys
 				s3_keys_tmp.clear();
 				// 2. do request again, now passing true
-				response_str =
-				    AWSListObjectV2::Request(shared_path, *http_params, s3_auth_params, main_continuation_token, true);
+				response_str = AWSListObjectV2::Request(fs.GetEncryptionUtil(), shared_path, *http_params,
+				                                        s3_auth_params, main_continuation_token, true);
 
 				// 3. now set next_continuation_token
 				next_continuation_token = AWSListObjectV2::ParseContinuationToken(response_str);
@@ -1347,8 +1359,9 @@ HTTPException S3FileSystem::GetHTTPError(FileHandle &handle, const HTTPResponse 
 	return GetS3Error(s3_handle.auth_params, response, url);
 }
 
-string AWSListObjectV2::Request(const string &path, HTTPParams &http_params, S3AuthParams &s3_auth_params,
-                                string &continuation_token, bool use_delimiter, optional_idx max_keys) {
+string AWSListObjectV2::Request(EncryptionUtil &encryption_util, const string &path, HTTPParams &http_params,
+                                S3AuthParams &s3_auth_params, string &continuation_token, bool use_delimiter,
+                                optional_idx max_keys) {
 	const idx_t MAX_RETRIES = 1;
 	for (idx_t it = 0; it <= MAX_RETRIES; it++) {
 		auto parsed_url = S3FileSystem::S3UrlParse(path, s3_auth_params);
@@ -1381,8 +1394,8 @@ string AWSListObjectV2::Request(const string &path, HTTPParams &http_params, S3A
 			// Remove last '&'
 			encoded_params.pop_back();
 		}
-		auto header_map =
-		    CreateS3Header(req_path, encoded_params, parsed_url.host, "s3", "GET", s3_auth_params, "", "", "", "");
+		auto header_map = CreateS3Header(encryption_util, req_path, encoded_params, parsed_url.host, "s3", "GET",
+		                                 s3_auth_params, "", "", "", "");
 
 		// Get requests use fresh connection
 		string full_host = parsed_url.http_proto + parsed_url.host;

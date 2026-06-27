@@ -1,18 +1,19 @@
 #include "crypto.hpp"
-#include "hash_functions.hpp"
-#include "mbedtls_wrapper.hpp"
-#include <iostream>
+
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/exception.hpp"
+
+#include <iostream>
+#include <mutex>
 #include <stdio.h>
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-
-#include "include/crypto.hpp"
 
 #include "re2/re2.h"
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #include <openssl/rand.h>
@@ -25,6 +26,60 @@ using CipherType = duckdb::EncryptionTypes::CipherType;
 using EncryptionVersion = duckdb::EncryptionTypes::EncryptionVersion;
 using MainHeader = duckdb::MainHeader;
 using Mode = duckdb::EncryptionTypes::Mode;
+
+static const EVP_MD *GetOpenSSLHashFunction(duckdb::CryptoHashFunction function) {
+	switch (function) {
+	case duckdb::CryptoHashFunction::MD5:
+		return EVP_md5();
+	case duckdb::CryptoHashFunction::SHA1:
+		return EVP_sha1();
+	case duckdb::CryptoHashFunction::SHA256:
+		return EVP_sha256();
+	default:
+		throw duckdb::InternalException("Unsupported crypto hash function");
+	}
+}
+
+static void CheckOpenSSLHashLength(duckdb::CryptoHashFunction function, unsigned int actual_size) {
+	if (actual_size != duckdb::CryptoHash::GetDigestSize(function)) {
+		throw duckdb::InternalException("OpenSSL returned an unexpected hash length");
+	}
+}
+
+class OpenSSLCryptoHashState : public duckdb::CryptoHashState {
+public:
+	explicit OpenSSLCryptoHashState(duckdb::CryptoHashFunction function)
+	    : duckdb::CryptoHashState(function), context(EVP_MD_CTX_new()) {
+		if (!context) {
+			throw duckdb::InternalException("OpenSSL failed with initializing hash context");
+		}
+		auto message_digest = GetOpenSSLHashFunction(function);
+		if (!EVP_DigestInit_ex(context, message_digest, nullptr)) {
+			throw duckdb::InternalException("OpenSSL failed to initialize hash");
+		}
+	}
+
+	~OpenSSLCryptoHashState() override {
+		EVP_MD_CTX_free(context);
+	}
+
+	void Hash(duckdb::const_data_ptr_t input, duckdb::idx_t input_len, duckdb::data_ptr_t output) override {
+		unsigned int output_size = 0;
+		if (!EVP_DigestInit_ex(context, nullptr, nullptr)) {
+			throw duckdb::InternalException("OpenSSL failed to initialize hash");
+		}
+		if (!EVP_DigestUpdate(context, input, input_len)) {
+			throw duckdb::InternalException("OpenSSL failed to update hash");
+		}
+		if (!EVP_DigestFinal_ex(context, output, &output_size)) {
+			throw duckdb::InternalException("OpenSSL failed to finalize hash");
+		}
+		CheckOpenSSLHashLength(GetFunction(), output_size);
+	}
+
+private:
+	EVP_MD_CTX *context;
+};
 
 namespace duckdb {
 
@@ -239,6 +294,72 @@ size_t AESStateSSL::Finalize(data_ptr_t out, idx_t out_len, data_ptr_t tag, idx_
 }
 
 } // namespace duckdb
+
+AESStateSSLFactory::AESStateSSLFactory() {
+	static std::once_flag rand_init;
+	std::call_once(rand_init, []() {
+		// Force OpenSSL's DRBG to initialize single-threadedly. In OpenSSL 3.0/3.1,
+		// the first RAND_bytes call lazily initializes internal provider state via ossl_ht.
+		// Concurrent first calls (e.g. parallel ATTACH) race on that hash table.
+		unsigned char dummy;
+		RAND_bytes(&dummy, 1);
+	});
+}
+
+duckdb::shared_ptr<duckdb::EncryptionState>
+AESStateSSLFactory::CreateEncryptionState(duckdb::unique_ptr<duckdb::EncryptionStateMetadata> metadata) const {
+	return duckdb::make_shared_ptr<duckdb::AESStateSSL>(std::move(metadata));
+}
+
+duckdb::unique_ptr<duckdb::CryptoHashState>
+AESStateSSLFactory::CreateHashState(duckdb::CryptoHashFunction function) const {
+	return duckdb::make_uniq<OpenSSLCryptoHashState>(function);
+}
+
+void AESStateSSLFactory::Hash(duckdb::CryptoHashFunction function, duckdb::const_data_ptr_t input,
+                              duckdb::idx_t input_len, duckdb::data_ptr_t output) const {
+	unsigned int output_size = 0;
+	if (!EVP_Digest(input, input_len, output, &output_size, GetOpenSSLHashFunction(function), nullptr)) {
+		throw duckdb::InternalException("OpenSSL failed to compute hash");
+	}
+	CheckOpenSSLHashLength(function, output_size);
+}
+
+void AESStateSSLFactory::Hmac(duckdb::CryptoHashFunction function, duckdb::const_data_ptr_t key, duckdb::idx_t key_len,
+                              duckdb::const_data_ptr_t input, duckdb::idx_t input_len,
+                              duckdb::data_ptr_t output) const {
+	if (function != duckdb::CryptoHashFunction::SHA256) {
+		throw duckdb::NotImplementedException("OpenSSL HMAC currently only supports SHA256");
+	}
+	if (key_len > duckdb::NumericLimits<int>::Maximum()) {
+		throw duckdb::InvalidInputException("HMAC key length exceeds OpenSSL limit");
+	}
+
+	unsigned int output_size = 0;
+	if (!HMAC(GetOpenSSLHashFunction(function), key, static_cast<int>(key_len), input, input_len, output,
+	          &output_size)) {
+		throw duckdb::InternalException("OpenSSL failed to compute HMAC");
+	}
+	CheckOpenSSLHashLength(function, output_size);
+}
+
+bool AESStateSSLFactory::SupportsHash(duckdb::CryptoHashFunction function) const {
+	switch (function) {
+	case duckdb::CryptoHashFunction::MD5:
+	case duckdb::CryptoHashFunction::SHA1:
+	case duckdb::CryptoHashFunction::SHA256:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool AESStateSSLFactory::SupportsHmac(duckdb::CryptoHashFunction function) const {
+	return function == duckdb::CryptoHashFunction::SHA256;
+}
+
+AESStateSSLFactory::~AESStateSSLFactory() {
+}
 
 extern "C" {
 

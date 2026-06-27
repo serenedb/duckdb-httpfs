@@ -194,6 +194,7 @@ public:
 
 	//! Wrapper around BufferManager::Allocate to limit the number of buffers
 	BufferHandle Allocate(idx_t part_size, uint16_t max_threads);
+	EncryptionUtil &GetEncryptionUtil();
 
 	//! S3 is object storage so directories effectively always exist
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override {
@@ -229,15 +230,16 @@ protected:
 
 // Helper class to do s3 ListObjectV2 api call https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
 struct AWSListObjectV2 {
-	static string Request(const string &path, HTTPParams &http_params, S3AuthParams &s3_auth_params,
-	                      string &continuation_token, bool use_delimiter = false,
+	static string Request(EncryptionUtil &encryption_util, const string &path, HTTPParams &http_params,
+	                      S3AuthParams &s3_auth_params, string &continuation_token, bool use_delimiter = false,
 	                      optional_idx max_keys = optional_idx());
 	static void ParseFileList(string &aws_response, vector<OpenFileInfo> &result);
 	static vector<string> ParseCommonPrefix(string &aws_response);
 	static string ParseContinuationToken(string &aws_response);
 };
 
-HTTPHeaders CreateS3Header(string url, string query, string host, string service, string method,
-                           const S3AuthParams &auth_params, string date_now = "", string datetime_now = "",
-                           string payload_hash = "", string content_type = "", string content_md5 = "");
+HTTPHeaders CreateS3Header(EncryptionUtil &encryption_util, string url, string query, string host, string service,
+                           string method, const S3AuthParams &auth_params, string date_now = "",
+                           string datetime_now = "", string payload_hash = "", string content_type = "",
+                           string content_md5 = "");
 } // namespace duckdb
