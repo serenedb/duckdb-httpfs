@@ -254,7 +254,7 @@ void S3AuthParams::SetRegion(string new_region) {
 
 unique_ptr<KeyValueSecret> CreateSecret(vector<string> &prefix_paths_p, string &type, string &provider, string &name,
                                         S3AuthParams &params) {
-	auto return_value = make_uniq<KeyValueSecret>(prefix_paths_p, type, provider, name);
+	auto return_value = make_uniq<KeyValueSecret>(prefix_paths_p, Identifier(type), Identifier(provider), Identifier(name));
 
 	//! Set key value map
 	return_value->secret_map["region"] = params.region;
