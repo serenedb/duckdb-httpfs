@@ -10,6 +10,8 @@
 #include "duckdb/main/client_context_file_opener.hpp"
 #ifdef OVERRIDE_ENCRYPTION_UTILS
 #include "crypto.hpp"
+#elif defined(EMSCRIPTEN)
+#include "mbedtls_wrapper.hpp"
 #endif // OVERRIDE_ENCRYPTION_UTILS
 
 #ifndef EMSCRIPTEN
@@ -195,6 +197,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 #ifdef OVERRIDE_ENCRYPTION_UTILS
 	// set pointer to OpenSSL encryption state
 	config.encryption_util = make_shared_ptr<AESStateSSLFactory>();
+#elif defined(EMSCRIPTEN)
+	if (!config.encryption_util) {
+		config.encryption_util = make_shared_ptr<duckdb_mbedtls::MbedTlsWrapper::AESStateMBEDTLSFactory>();
+	}
 #endif // OVERRIDE_ENCRYPTION_UTILS
 }
 void HttpfsExtension::Load(ExtensionLoader &loader) {

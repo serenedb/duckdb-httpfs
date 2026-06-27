@@ -1,17 +1,21 @@
 #pragma once
 
+#include "duckdb/common/encryption_state.hpp"
 #include "duckdb/common/helper.hpp"
+
+#include <string>
 
 namespace duckdb {
 
 typedef unsigned char hash_bytes[32];
 typedef unsigned char hash_str[64];
 
-void sha256(const char *in, size_t in_len, hash_bytes &out);
+void sha256(EncryptionUtil &encryption_util, const char *in, size_t in_len, hash_bytes &out);
 
-void hmac256(const std::string &message, const char *secret, size_t secret_len, hash_bytes &out);
+void hmac256(EncryptionUtil &encryption_util, const std::string &message, const char *secret, size_t secret_len,
+             hash_bytes &out);
 
-void hmac256(std::string message, hash_bytes secret, hash_bytes &out);
+void hmac256(EncryptionUtil &encryption_util, std::string message, hash_bytes secret, hash_bytes &out);
 
 void hex256(hash_bytes &in, hash_str &out);
 
