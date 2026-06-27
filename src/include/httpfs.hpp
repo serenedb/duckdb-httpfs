@@ -115,6 +115,11 @@ public:
 	void AddStatistics(idx_t read_offset, idx_t read_length, idx_t read_duration);
 	void AdaptReadBufferSize(idx_t next_read_offset);
 
+	// Record a completed range request into the network throughput estimate (latency + bandwidth)
+	void RecordNetworkSample(double total_seconds, idx_t bytes, bool sample_has_ttfb, double ttfb_seconds);
+	// Expose the measured network throughput estimate to the (parquet) prefetch cost model.
+	bool TryGetNetworkThroughput(NetworkThroughputEstimate &result);
+
 	void AddHeaders(HTTPHeaders &map);
 
 	// Get a Client to run requests over
@@ -137,6 +142,14 @@ private:
 		idx_t duration;
 	};
 	vector<RangeRequestStatistics> range_request_statistics;
+
+	// throughput_lock guards the throughput estimate (fed by RecordNetworkSample) and range_request_statistics against concurrent prefetch reads.
+	mutex throughput_lock;
+	double tp_latency_seconds = 0;
+	double tp_bandwidth_bps = 0;
+	idx_t tp_sample_count = 0;
+	// Minimum payload size for a request to contribute a bandwidth sample
+	constexpr static idx_t MIN_BANDWIDTH_SAMPLE_BYTES = 1 << 16; // 64 KiB
 
 public:
 	void Close() override {
@@ -209,6 +222,9 @@ public:
 	}
 	bool OnDiskFile(FileHandle &handle) override {
 		return false;
+	}
+	bool TryGetNetworkThroughput(FileHandle &handle, NetworkThroughputEstimate &result) override {
+		return handle.Cast<HTTPFileHandle>().TryGetNetworkThroughput(result);
 	}
 	bool IsPipe(const string &filename, optional_ptr<FileOpener> opener) override {
 		return false;
