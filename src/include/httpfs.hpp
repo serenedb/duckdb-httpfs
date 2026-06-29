@@ -143,7 +143,8 @@ private:
 	};
 	vector<RangeRequestStatistics> range_request_statistics;
 
-	// throughput_lock guards the throughput estimate (fed by RecordNetworkSample) and range_request_statistics against concurrent prefetch reads.
+	// throughput_lock guards the throughput estimate (fed by RecordNetworkSample) and range_request_statistics against
+	// concurrent prefetch reads.
 	mutex throughput_lock;
 	double tp_latency_seconds = 0;
 	double tp_bandwidth_bps = 0;

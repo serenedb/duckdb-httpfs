@@ -379,8 +379,7 @@ unique_ptr<HTTPResponse> HTTPFileSystem::GetRangeRequest(FileHandle &handle, str
 	                 response->status == HTTPStatusCode::Accepted_202)) {
 		double total_seconds = 0;
 		if (get_request.request_end.value > get_request.request_start.value) {
-			total_seconds =
-			    static_cast<double>(get_request.request_end.value - get_request.request_start.value) / 1e6;
+			total_seconds = static_cast<double>(get_request.request_end.value - get_request.request_start.value) / 1e6;
 		}
 		const idx_t bytes = get_request.bytes_received != 0 ? get_request.bytes_received : buffer_out_len;
 		hfh.RecordNetworkSample(total_seconds, bytes, get_request.have_time_to_fst_byte,
@@ -487,8 +486,7 @@ void HTTPFileHandle::AddStatistics(idx_t read_offset, idx_t read_length, idx_t r
 	range_request_statistics.push_back({read_offset, read_length, read_duration});
 }
 
-void HTTPFileHandle::RecordNetworkSample(double total_seconds, idx_t bytes, bool sample_has_ttfb,
-                                         double ttfb_seconds) {
+void HTTPFileHandle::RecordNetworkSample(double total_seconds, idx_t bytes, bool sample_has_ttfb, double ttfb_seconds) {
 	if (!(total_seconds > 0)) {
 		return;
 	}
