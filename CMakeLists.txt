@@ -19,8 +19,7 @@ find_package(CURL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 include_directories(${CURL_INCLUDE_DIRS})
 
-include_directories(src/include
-                    ${DUCKDB_MODULE_BASE_DIR}/third_party/httplib)
+include_directories(src/include)
 add_subdirectory(src)
 set(EXTENSION_SOURCES ${ALL_OBJECT_FILES})
 

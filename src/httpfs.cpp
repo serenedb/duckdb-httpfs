@@ -15,6 +15,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "http_state.hpp"
 
+#include <ada.h>
 #include <chrono>
 #include <map>
 #include <string>
@@ -1100,6 +1101,20 @@ void HTTPFSUtil::ClearCachedConnections() {
 
 string HTTPFSUtil::GetName() const {
 	return "HTTPFS";
+}
+
+unordered_map<string, string> HTTPFSUtil::ParseGetParameters(const string &text) {
+	unordered_map<string, string> result;
+	auto pos = text.find('?');
+	if (pos == string::npos) {
+		return result;
+	}
+	ada::url_search_params search_params(text.substr(pos + 1));
+	auto entries = search_params.get_entries();
+	while (auto entry = entries.next()) {
+		result.try_emplace(entry->first, entry->second);
+	}
+	return result;
 }
 
 } // namespace duckdb
