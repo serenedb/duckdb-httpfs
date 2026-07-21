@@ -10,9 +10,6 @@ require parquet
 mode skip
 
 statement ok
-SET httpfs_client_implementation='curl';
-
-statement ok
 CALL enable_logging('HTTP');
 
 query II

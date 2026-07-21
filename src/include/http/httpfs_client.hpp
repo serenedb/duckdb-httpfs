@@ -97,7 +97,6 @@ public:
 	//! Read HTTPFS settings without publishing a transport reuse domain.
 	static unique_ptr<HTTPFSParams> InitializeRawParameters(HTTPFSUtil &http_util, optional_ptr<FileOpener> opener,
 	                                                        optional_ptr<FileOpenerInfo> info);
-	unique_ptr<HTTPClient> InitializeClient(HTTPParams &http_params, const string &proto_host_port) override;
 	void LogRequest(BaseRequest &request, optional_ptr<HTTPResponse> response) override;
 	HTTPTransportReusePolicy GetTransportReusePolicy() const override;
 

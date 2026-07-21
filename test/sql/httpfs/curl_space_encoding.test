@@ -26,9 +26,6 @@ set ignore_error_messages
 statement ok
 CREATE TABLE test_1 as (SELECT 1 FROM range(0,5));
 
-statement ok
-SET httpfs_client_implementation = curl
-
 foreach prefix s3:// r2:// s3a:// s3n://
 
 statement ok

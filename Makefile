@@ -21,7 +21,6 @@ MINIO_TEST_CONFIGS := \
 	test/configs/httpfs_dynamic.json \
 	test/configs/httpfs_autoloading.json \
 	test/configs/httpfs_curl.json \
-	test/configs/httpfs_httplib.json \
 	test/configs/httpfs_connection_caching.json
 
 TEST_MINIO_FLAGS ?= --track-runtime=30 --batch-timeout=60
