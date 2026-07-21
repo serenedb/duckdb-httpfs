@@ -17,14 +17,6 @@ SELECT generation_energy_source FROM 's3://pudl.catalyst.coop/nightly/core_eia93
 battery_storage
 
 statement ok
-SET httpfs_client_implementation='httplib';
-
-query I
-SELECT generation_energy_source FROM 's3://pudl.catalyst.coop/nightly/core_eia930__hourly_net_generation_by_energy_source.parquet' LIMIT 1;
-----
-battery_storage
-
-statement ok
 SET enable_server_cert_verification = true;
 
 query I

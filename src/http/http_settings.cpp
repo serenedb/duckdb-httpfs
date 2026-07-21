@@ -18,14 +18,6 @@ static void RequireGlobalScope(SetScope scope, const char *setting) {
 	}
 }
 
-static bool ConnectionCachingEnabled(const ClientContext &context) {
-	Value current_value;
-	if (context.TryGetCurrentSetting("httpfs_connection_caching", current_value)) {
-		return BooleanValue::Get(current_value);
-	}
-	return true;
-}
-
 static bool ConnectionCachingEnabled(const DBConfig &config) {
 	Value current_value;
 	if (config.TryGetCurrentSetting("httpfs_connection_caching", current_value)) {
@@ -59,32 +51,6 @@ static void SetExtraHTTPHeaders(ClientContext &, SetScope, Value &parameter) {
 			                            key_value[0].GetValue<string>());
 		}
 	}
-}
-
-static void SetHTTPClientImplementation(ClientContext &context, SetScope scope, Value &parameter) {
-	RequireGlobalScope(scope, "httpfs_client_implementation");
-	auto &config = DBConfig::GetConfig(context);
-	auto value = StringValue::Get(parameter);
-	auto &http_util = config.GetHTTPUtil();
-	if (http_util.GetName() == "WasmHTTPUtils") {
-		if (value == "wasm" || value == "default") {
-			return;
-		}
-		throw InvalidInputException("Unsupported option for httpfs_client_implementation, only `wasm` and "
-		                            "`default` are currently supported for duckdb-wasm");
-	}
-#ifndef EMSCRIPTEN
-	if (value == "curl" || value == "default") {
-		config.SetHTTPUtil(make_shared_ptr<HTTPFSCurlUtil>(ConnectionCachingEnabled(context)));
-		return;
-	}
-	if (value == "httplib") {
-		config.SetHTTPUtil(make_shared_ptr<HTTPFSUtil>());
-		return;
-	}
-#endif
-	throw InvalidInputException("Unsupported option for httpfs_client_implementation, only `curl`, `httplib` "
-	                            "and `default` are currently supported");
 }
 
 static void SetHTTPConnectionCaching(ClientContext &context, SetScope scope, Value &parameter) {
@@ -135,8 +101,6 @@ void HTTPSettings::Register(DBConfig &config) {
 	                          Value(false));
 	config.AddExtensionOption("hf_max_per_page", "Debug option to limit number of items returned in list requests",
 	                          LogicalType::UBIGINT, Value::UBIGINT(0));
-	config.AddExtensionOption("httpfs_client_implementation", "Select which HTTP client implementation is used",
-	                          LogicalType::VARCHAR, "default", SetHTTPClientImplementation, SetScope::GLOBAL);
 	config.AddExtensionOption("httpfs_connection_caching", "Enable connection caching for HTTP requests",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(true), SetHTTPConnectionCaching, SetScope::GLOBAL);
 }
