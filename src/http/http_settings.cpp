@@ -78,13 +78,9 @@ static void SetHTTPClientImplementation(ClientContext &context, SetScope scope, 
 		config.SetHTTPUtil(make_shared_ptr<HTTPFSCurlUtil>(ConnectionCachingEnabled(context)));
 		return;
 	}
-	if (value == "httplib") {
-		config.SetHTTPUtil(make_shared_ptr<HTTPFSUtil>());
-		return;
-	}
 #endif
-	throw InvalidInputException("Unsupported option for httpfs_client_implementation, only `curl`, `httplib` "
-	                            "and `default` are currently supported");
+	throw InvalidInputException(
+	    "Unsupported option for httpfs_client_implementation, only `curl` and `default` are currently supported");
 }
 
 static void SetHTTPConnectionCaching(ClientContext &context, SetScope scope, Value &parameter) {

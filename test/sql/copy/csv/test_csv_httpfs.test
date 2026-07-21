@@ -10,7 +10,7 @@ require parquet
 statement ok
 CALL enable_logging('HTTP');
 
-foreach httpfs_implementation curl httplib
+foreach httpfs_implementation curl
 
 statement ok
 SET httpfs_client_implementation='{httpfs_implementation}';
