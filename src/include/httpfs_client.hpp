@@ -78,7 +78,6 @@ class HTTPFSUtil : public HTTPUtil {
 public:
 	unique_ptr<HTTPParams> InitializeParameters(optional_ptr<FileOpener> opener,
 	                                            optional_ptr<FileOpenerInfo> info) override;
-	unique_ptr<HTTPClient> InitializeClient(HTTPParams &http_params, const string &proto_host_port) override;
 
 	//! Clear any cached connections
 	virtual void ClearCachedConnections();
@@ -97,8 +96,6 @@ public:
 	void CloseClient(unique_ptr<HTTPClient> &&client) override;
 	void ClearCachedConnections() override;
 	unique_ptr<HTTPResponse> SendRequest(BaseRequest &request, unique_ptr<HTTPClient> &client) override;
-
-	static unordered_map<string, string> ParseGetParameters(const string &text);
 
 	string GetName() const override;
 
