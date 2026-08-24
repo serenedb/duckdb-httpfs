@@ -16,7 +16,7 @@ SET enable_logging=true;
 query I
 SELECT current_setting('httpfs_connection_caching');
 ----
-true
+on
 
 statement ok
 CALL enable_logging('HTTPFSInfo');

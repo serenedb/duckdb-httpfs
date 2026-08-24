@@ -15,7 +15,7 @@ SET httpfs_connection_caching=false;
 
 # The setting must now report as disabled
 query I
-SELECT count(*) FROM duckdb_settings() WHERE name = 'httpfs_connection_caching' AND value = 'false';
+SELECT count(*) FROM duckdb_settings() WHERE name = 'httpfs_connection_caching' AND value = 'off';
 ----
 1
 
