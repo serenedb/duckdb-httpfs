@@ -8,7 +8,12 @@ statement ok
 set httpfs_client_implementation = 'default';
 
 statement ok
+set httpfs_client_implementation = 'curl';
+
+statement error
 set httpfs_client_implementation = 'httplib';
+----
+Unsupported option for httpfs_client_implementation
 
 statement error
 set httpfs_client_implementation = 'something else';
