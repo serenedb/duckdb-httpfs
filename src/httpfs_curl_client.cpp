@@ -6,6 +6,7 @@
 
 #include <curl/curl.h>
 #include <sys/stat.h>
+#include <fast_float/fast_float.h>
 #include "duckdb/common/exception/http_exception.hpp"
 
 #ifndef EMSCRIPTEN
@@ -40,10 +41,29 @@ static std::string SelectCURLCertPath() {
 	return std::string();
 }
 
+struct RequestInfo {
+	string url = "";
+	string body = "";
+	uint16_t response_code = 0;
+	std::vector<HTTPHeaders> header_collection;
+};
+
 static size_t RequestWriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
 	size_t totalSize = size * nmemb;
-	std::string *str = static_cast<std::string *>(userp);
-	str->append(static_cast<char *>(contents), totalSize);
+	auto *request_info = static_cast<RequestInfo *>(userp);
+	auto &body = request_info->body;
+	if (body.empty() && !request_info->header_collection.empty()) {
+		auto &headers = request_info->header_collection.back();
+		if (headers.HasHeader("content-length")) {
+			const auto value = headers.GetHeaderValue("content-length");
+			idx_t content_length = 0;
+			const auto res = fast_float::from_chars(value.data(), value.data() + value.size(), content_length);
+			if (res.ec == std::errc {}) {
+				body.reserve(content_length);
+			}
+		}
+	}
+	body.append(static_cast<char *>(contents), totalSize);
 	return totalSize;
 }
 
@@ -103,12 +123,6 @@ CURLHandle::~CURLHandle() {
 	curl_easy_cleanup(curl);
 }
 
-struct RequestInfo {
-	string url = "";
-	string body = "";
-	uint16_t response_code = 0;
-	std::vector<HTTPHeaders> header_collection;
-};
 
 static idx_t httpfs_client_count = 0;
 
@@ -196,7 +210,7 @@ public:
 		curl_easy_setopt(*curl, CURLOPT_HEADERDATA, &request_info->header_collection);
 		// define the write data callback (for get requests)
 		curl_easy_setopt(*curl, CURLOPT_WRITEFUNCTION, RequestWriteCallback);
-		curl_easy_setopt(*curl, CURLOPT_WRITEDATA, &request_info->body);
+		curl_easy_setopt(*curl, CURLOPT_WRITEDATA, request_info.get());
 
 		// Reset PROXY-related settings, so they are set only on proxy actually being there
 		curl_easy_setopt(*curl, CURLOPT_PROXY, NULL);
@@ -283,19 +297,16 @@ public:
 			state->total_bytes_received += bytes_received;
 		}
 
-		if (info.response_handler) {
-			auto response = TransformResponseCurl(res);
-			if (!info.response_handler(*response)) {
-				return response;
-			}
+		auto response = TransformResponseCurl(res);
+		if (info.response_handler && !info.response_handler(*response)) {
+			return response;
 		}
 
-		const char *data = request_info->body.c_str();
 		if (info.content_handler) {
-			info.content_handler(const_data_ptr_cast(data), bytes_received);
+			info.content_handler(const_data_ptr_cast(response->body.c_str()), bytes_received);
 		}
 
-		return TransformResponseCurl(res);
+		return response;
 	}
 
 	unique_ptr<HTTPResponse> Put(PutRequestInfo &info) override {
@@ -552,8 +563,11 @@ private:
 			response->request_error = curl_easy_strerror(res);
 			return response;
 		}
-		response->body = request_info->body;
-		response->url = request_info->url;
+		// This function is not idempotent: the assert guards against calling it twice.
+		// The body can legitimately be empty, so the url is what we check.
+		D_ASSERT(!request_info->url.empty());
+		response->body = std::move(request_info->body);
+		response->url = std::move(request_info->url);
 		response->reason = HTTPUtil::GetStatusMessage(HTTPUtil::ToStatusCode(request_info->response_code));
 		if (!request_info->header_collection.empty()) {
 			for (auto &header : request_info->header_collection.back()) {
