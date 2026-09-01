@@ -145,11 +145,11 @@ static void AddUserAgentIfAvailable(HTTPFSParams &http_params, HTTPHeaders &head
 }
 
 static void AddHandleHeaders(HTTPFSParams &http_params, HTTPHeaders &header_map) {
-	// Inject headers from the http param extra_headers into the request
+	// Inject headers from the http param extra_headers into the request. The request's own map records the merge --
+	// parallel range requests share the params, so nothing is written back to them here.
 	for (auto &header : http_params.extra_headers) {
 		header_map[header.first] = header.second;
 	}
-	http_params.pre_merged_headers = true;
 }
 
 unique_ptr<HTTPResponse> HTTPFileSystem::PostRequest(HTTPInput &input, string url, HTTPHeaders header_map,

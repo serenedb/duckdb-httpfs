@@ -123,7 +123,6 @@ CURLHandle::~CURLHandle() {
 	curl_easy_cleanup(curl);
 }
 
-
 static idx_t httpfs_client_count = 0;
 
 class HTTPFSCurlClient : public HTTPClient {
@@ -528,8 +527,6 @@ public:
 
 private:
 	CURLRequestHeaders TransformHeadersCurl(const HTTPHeaders &header_map, const HTTPParams &params) {
-		auto &httpfs_params = params.Cast<HTTPFSParams>();
-
 		std::vector<std::string> headers;
 		for (auto &entry : header_map) {
 			const std::string new_header = entry.first + ": " + entry.second;
@@ -539,8 +536,10 @@ private:
 		for (auto &header : headers) {
 			curl_headers.Add(header);
 		}
-		if (!httpfs_params.pre_merged_headers) {
-			for (auto &entry : params.extra_headers) {
+		// A caller that merged the extra headers into the request's map already (AddHandleHeaders) carries them in
+		// header_map; only the ones not there yet are added, so no shared merged-flag is needed.
+		for (auto &entry : params.extra_headers) {
+			if (!header_map.HasHeader(entry.first)) {
 				curl_headers.Add(entry.first + ": " + entry.second);
 			}
 		}
