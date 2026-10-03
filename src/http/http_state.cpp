@@ -19,9 +19,10 @@ unique_ptr<CachedFileHandle> CachedFile::TryGetHandle() {
 
 unique_ptr<CachedFileDownload> CachedFile::StartDownload(Allocator &allocator) {
 	annotated_unique_lock<annotated_mutex> guard(lock);
-	while (downloading) {
-		download_complete.wait(guard, [&]() DUCKDB_REQUIRES(lock) { return !downloading; });
-	}
+	auto downloaded = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+		return !downloading;
+	};
+	lock.Await(absl::Condition(&downloaded));
 	if (cached_data) {
 		return nullptr;
 	}
@@ -112,7 +113,6 @@ unique_ptr<CachedFileHandle> CachedFileDownload::Finalize(HTTPMetadataCacheEntry
 	file->cached_data = cached_data;
 	file->downloading = false;
 	active = false;
-	file->download_complete.notify_all();
 	return make_uniq<CachedFileHandle>(std::move(cached_data));
 }
 
@@ -124,7 +124,6 @@ void CachedFileDownload::Abort() {
 	D_ASSERT(file->downloading);
 	file->downloading = false;
 	active = false;
-	file->download_complete.notify_all();
 }
 
 void HTTPState::Reset() {

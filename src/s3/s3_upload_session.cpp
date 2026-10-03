@@ -82,9 +82,10 @@ void S3UploadSession::BeginWriteOperation() DUCKDB_EXCLUDES(state_lock) {
 	const char *error_message = nullptr;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
-		while (primary_failure.primary_error && cleanup_state != CleanupState::COMPLETE) {
-			state_changed.wait(guard);
-		}
+		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return !primary_failure.primary_error || cleanup_state == CleanupState::COMPLETE;
+		};
+		state_lock.Await(absl::Condition(&settled));
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (lifecycle_state == LifecycleState::ABORTING || lifecycle_state == LifecycleState::ABORTED) {
@@ -114,9 +115,10 @@ unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::BeginFinalize(bool &a
 	already_finalized = false;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
-		while (primary_failure.primary_error && cleanup_state != CleanupState::COMPLETE) {
-			state_changed.wait(guard);
-		}
+		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return !primary_failure.primary_error || cleanup_state == CleanupState::COMPLETE;
+		};
+		state_lock.Await(absl::Condition(&settled));
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (lifecycle_state == LifecycleState::ABORTING || lifecycle_state == LifecycleState::ABORTED) {
@@ -158,7 +160,6 @@ void S3UploadSession::FinishFinalize() DUCKDB_EXCLUDES(state_lock) {
 	D_ASSERT(active_operations == 1);
 	active_operations--;
 	lifecycle_state = LifecycleState::FINALIZED;
-	state_changed.notify_all();
 }
 
 void S3UploadSession::LatchFailureLocked(shared_ptr<const ErrorData> error, FailureDisposition disposition)
@@ -173,7 +174,6 @@ void S3UploadSession::LatchFailureLocked(shared_ptr<const ErrorData> error, Fail
 	if (lifecycle_state == LifecycleState::FINALIZING) {
 		lifecycle_state = LifecycleState::ACTIVE;
 	}
-	state_changed.notify_all();
 }
 
 void S3UploadSession::LatchFailure(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock) {
@@ -192,7 +192,6 @@ void S3UploadSession::ReleaseOperation() DUCKDB_EXCLUDES(state_lock) {
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
 		D_ASSERT(active_operations > 0);
 		active_operations--;
-		state_changed.notify_all();
 		if (!primary_failure.primary_error) {
 			return;
 		}
@@ -204,12 +203,12 @@ void S3UploadSession::ReleaseOperation() DUCKDB_EXCLUDES(state_lock) {
 				cleanup_owner = true;
 			} else {
 				cleanup_state = CleanupState::COMPLETE;
-				state_changed.notify_all();
 			}
 		}
-		while (!cleanup_owner && cleanup_state != CleanupState::COMPLETE) {
-			state_changed.wait(guard);
-		}
+		auto cleaned_up = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return cleanup_owner || cleanup_state == CleanupState::COMPLETE;
+		};
+		state_lock.Await(absl::Condition(&cleaned_up));
 		if (!cleanup_owner) {
 			failure = CaptureFailure();
 		}
@@ -226,7 +225,6 @@ void S3UploadSession::ReleaseOperation() DUCKDB_EXCLUDES(state_lock) {
 			}
 			cleanup_state = CleanupState::COMPLETE;
 			failure = CaptureFailure();
-			state_changed.notify_all();
 		}
 	}
 	ThrowFailure(failure);
@@ -299,9 +297,10 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 	PreparedWrite result;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
-		while (location > next_offset && !primary_failure.primary_error) {
-			state_changed.wait(guard);
-		}
+		auto ready = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return location <= next_offset || primary_failure.primary_error;
+		};
+		state_lock.Await(absl::Condition(&ready));
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (location != next_offset) {
@@ -340,7 +339,6 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 
 			buffered_part = std::move(result.buffered_part);
 			next_offset += size;
-			state_changed.notify_all();
 		}
 	}
 	if (failure.primary_error) {
@@ -395,9 +393,10 @@ shared_ptr<const string> S3UploadSession::EnsureMultipartUpload() {
 	FailureSnapshot failure;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
-		while (initialization_state == InitializationState::IN_PROGRESS && !primary_failure.primary_error) {
-			state_changed.wait(guard);
-		}
+		auto initialized = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return initialization_state != InitializationState::IN_PROGRESS || primary_failure.primary_error;
+		};
+		state_lock.Await(absl::Condition(&initialized));
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (initialization_state == InitializationState::SUCCEEDED) {
@@ -432,7 +431,6 @@ shared_ptr<const string> S3UploadSession::EnsureMultipartUpload() {
 		D_ASSERT(!multipart_upload_id);
 		multipart_upload_id = upload_id;
 		initialization_state = InitializationState::SUCCEEDED;
-		state_changed.notify_all();
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		}
@@ -640,9 +638,10 @@ bool S3UploadSession::Abort() {
 	bool cleanup_owner = false;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
-		while (lifecycle_state == LifecycleState::FINALIZING || lifecycle_state == LifecycleState::ABORTING) {
-			state_changed.wait(guard);
-		}
+		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return lifecycle_state != LifecycleState::FINALIZING && lifecycle_state != LifecycleState::ABORTING;
+		};
+		state_lock.Await(absl::Condition(&settled));
 		if (lifecycle_state == LifecycleState::FINALIZED) {
 			return false;
 		}
@@ -652,15 +651,17 @@ bool S3UploadSession::Abort() {
 
 		D_ASSERT(lifecycle_state == LifecycleState::ACTIVE);
 		lifecycle_state = LifecycleState::ABORTING;
-		while (active_operations > 0) {
-			state_changed.wait(guard);
-		}
+		auto drained = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return active_operations == 0;
+		};
+		state_lock.Await(absl::Condition(&drained));
 		discarded_buffer = std::move(buffered_part);
 
 		if (primary_failure.primary_error) {
-			while (cleanup_state != CleanupState::COMPLETE) {
-				state_changed.wait(guard);
-			}
+			auto cleaned_up = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+				return cleanup_state == CleanupState::COMPLETE;
+			};
+			state_lock.Await(absl::Condition(&cleaned_up));
 			failure = CaptureFailure();
 		} else if (multipart_upload_id && !abort_suppressed) {
 			D_ASSERT(cleanup_state == CleanupState::NONE);
@@ -673,7 +674,6 @@ bool S3UploadSession::Abort() {
 
 		if (!cleanup_owner) {
 			lifecycle_state = LifecycleState::ABORTED;
-			state_changed.notify_all();
 		}
 	}
 	discarded_buffer.reset();
@@ -686,7 +686,6 @@ bool S3UploadSession::Abort() {
 			annotated_lock_guard<annotated_mutex> guard(state_lock);
 			cleanup_state = CleanupState::COMPLETE;
 			lifecycle_state = LifecycleState::ABORTED;
-			state_changed.notify_all();
 		}
 	}
 	if (failure.primary_error) {
