@@ -11,7 +11,6 @@
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/main/client_context_state.hpp"
 
-#include <condition_variable>
 #include <functional>
 
 namespace duckdb {
@@ -34,11 +33,10 @@ public:
 			support = state.support.load();
 			if (support == RangeRequestSupport::UNKNOWN) {
 				annotated_unique_lock<annotated_mutex> lock(state.state_mutex);
-				while (state.probing && state.support.load() == RangeRequestSupport::UNKNOWN) {
-					state.probe_complete.wait(lock, [&]() DUCKDB_REQUIRES(state.state_mutex) {
-						return !state.probing || state.support.load() != RangeRequestSupport::UNKNOWN;
-					});
-				}
+				auto probed = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+					return !state.probing || state.support.load() != RangeRequestSupport::UNKNOWN;
+				};
+				state.state_mutex.Await(absl::Condition(&probed));
 				support = state.support.load();
 				if (support == RangeRequestSupport::UNKNOWN) {
 					state.probing = true;
@@ -95,19 +93,16 @@ private:
 		annotated_lock_guard<annotated_mutex> lock(state_mutex);
 		support = new_support;
 		probing = false;
-		probe_complete.notify_all();
 	}
 	void AbortProbe() {
 		annotated_lock_guard<annotated_mutex> lock(state_mutex);
 		if (support.load() == RangeRequestSupport::UNKNOWN) {
 			probing = false;
-			probe_complete.notify_all();
 		}
 	}
 
 private:
 	annotated_mutex state_mutex;
-	std::condition_variable probe_complete DUCKDB_GUARDED_BY(state_mutex);
 	bool probing DUCKDB_GUARDED_BY(state_mutex) = false;
 	atomic<RangeRequestSupport> support = {RangeRequestSupport::UNKNOWN};
 };
@@ -125,7 +120,6 @@ public:
 private:
 	//! Download state and cached data
 	mutable annotated_mutex lock;
-	mutable std::condition_variable download_complete DUCKDB_GUARDED_BY(lock);
 	shared_ptr<class CachedFileData> cached_data DUCKDB_GUARDED_BY(lock);
 	bool downloading DUCKDB_GUARDED_BY(lock) = false;
 };

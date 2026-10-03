@@ -8,8 +8,6 @@
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
 
-#include <condition_variable>
-
 namespace duckdb {
 
 class HTTPRequestSession;
@@ -165,7 +163,6 @@ private:
 
 	//! Operation and lifecycle synchronization.
 	annotated_mutex state_lock;
-	std::condition_variable state_changed;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
 

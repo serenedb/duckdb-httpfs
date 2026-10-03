@@ -14,7 +14,6 @@
 #include "s3/s3_settings.hpp"
 
 #include <exception>
-#include <condition_variable>
 #include <unordered_map>
 
 #undef RemoveDirectory
@@ -87,7 +86,6 @@ private:
 
 	//! Upload lifetime and concurrent callers
 	annotated_mutex upload_lock;
-	std::condition_variable upload_state_changed;
 	unique_ptr<S3UploadSession> upload_session;
 	UploadState upload_state DUCKDB_GUARDED_BY(upload_lock) = UploadState::ACTIVE;
 	idx_t active_upload_calls DUCKDB_GUARDED_BY(upload_lock) = 0;
