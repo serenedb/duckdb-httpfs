@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 2.8.12...3.29)
 
 project(HTTPFsExtension)
 
-add_extension_definitions()
-
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wpessimizing-move)
 endif()
