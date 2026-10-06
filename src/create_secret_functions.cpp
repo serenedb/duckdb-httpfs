@@ -285,7 +285,7 @@ unique_ptr<BaseSecret> CreateBearerTokenFunctions::CreateSecretFunctionInternal(
 		if (input.type == HUGGINGFACE_TYPE) {
 			scope.push_back("hf://");
 		} else {
-			throw InternalException("Unknown secret type found in httpfs extension: '%s'", input.type);
+			throw InternalException("Unknown secret type found in httpfs extension: %s", input.type);
 		}
 	}
 	auto return_value = make_uniq<KeyValueSecret>(scope, input.type, input.provider, input.name);
