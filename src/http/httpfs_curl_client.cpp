@@ -42,13 +42,6 @@ static string SelectCURLCertPath() {
 	return string();
 }
 
-static size_t RequestWriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
-	auto total_size = size * nmemb;
-	auto &result = *static_cast<string *>(userp);
-	result.append(char_ptr_cast(contents), total_size);
-	return total_size;
-}
-
 static size_t RequestHeaderCallback(void *contents, size_t size, size_t nmemb, void *userp) {
 	auto total_size = size * nmemb;
 	string header(char_ptr_cast(contents), total_size);
@@ -253,8 +246,8 @@ private:
 			client.curl->SetOption(CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
 			client.curl->SetOption(CURLOPT_HEADERFUNCTION, RequestHeaderCallback);
 			client.curl->SetOption(CURLOPT_HEADERDATA, &client.request_info->header_collection);
-			client.curl->SetOption(CURLOPT_WRITEFUNCTION, RequestWriteCallback);
-			client.curl->SetOption(CURLOPT_WRITEDATA, &client.request_info->body);
+			client.curl->SetOption(CURLOPT_WRITEFUNCTION, BodyWriteCallback);
+			client.curl->SetOption(CURLOPT_WRITEDATA, &client);
 		}
 
 		static void ConfigureProxy(HTTPFSCurlClient &client, const HTTPFSParams &params) {
@@ -293,8 +286,8 @@ private:
 			try {
 				client.curl->SetOption(CURLOPT_HEADERFUNCTION, RequestHeaderCallback);
 				client.curl->SetOption(CURLOPT_HEADERDATA, &client.request_info->header_collection);
-				client.curl->SetOption(CURLOPT_WRITEFUNCTION, RequestWriteCallback);
-				client.curl->SetOption(CURLOPT_WRITEDATA, &client.request_info->body);
+				client.curl->SetOption(CURLOPT_WRITEFUNCTION, BodyWriteCallback);
+				client.curl->SetOption(CURLOPT_WRITEDATA, &client);
 			} catch (...) {
 				// Cleanup must not throw or leave callbacks pointing to this destroyed transfer.
 				client.curl.reset();
@@ -372,7 +365,7 @@ private:
 				return stopped ? 0 : size;
 			}
 			if (!stream_content || client.request_info->response_code >= 400) {
-				client.request_info->body.append(char_ptr_cast(contents), size);
+				client.AppendBody(char_ptr_cast(contents), size);
 			} else if (!request.content_handler(const_data_ptr_cast(contents), size)) {
 				stopped = true;
 				return 0;
@@ -751,7 +744,7 @@ private:
 			return response;
 		}
 		if (include_body) {
-			response->body = request_info->body;
+			response->body = std::move(request_info->body);
 		}
 		response->url = request_info->url;
 		response->reason = HTTPUtil::GetStatusMessage(status_code);
@@ -772,11 +765,30 @@ private:
 	}
 
 	unique_ptr<HTTPResponse> TransformBufferedResponseCurl(CURLcode res) {
+		const auto bytes_received = request_info->body.size();
 		auto response = TransformResponseCurl(res);
 		if (state) {
-			state->RecordBytesReceived(request_info->body.size());
+			state->RecordBytesReceived(bytes_received);
 		}
 		return response;
+	}
+
+	static size_t BodyWriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+		auto total_size = size * nmemb;
+		static_cast<HTTPFSCurlClient *>(userp)->AppendBody(char_ptr_cast(contents), total_size);
+		return total_size;
+	}
+
+	void AppendBody(const char *data, idx_t size) {
+		auto &body = request_info->body;
+		if (body.empty()) {
+			curl_off_t content_length = -1;
+			if (curl_easy_getinfo(*curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &content_length) == CURLE_OK &&
+			    content_length > 0) {
+				body.reserve(NumericCast<idx_t>(content_length));
+			}
+		}
+		body.append(data, size);
 	}
 
 	static void InitCurlGlobal() {
