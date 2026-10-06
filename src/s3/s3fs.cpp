@@ -151,18 +151,16 @@ void S3FileHandle::ReleaseUpload() {
 	annotated_lock_guard<annotated_mutex> guard(upload_lock);
 	D_ASSERT(active_upload_calls > 0);
 	active_upload_calls--;
-	if (active_upload_calls == 0) {
-		upload_state_changed.notify_all();
-	}
 }
 
 void S3FileHandle::AbortUpload() {
 	optional_ptr<S3UploadSession> session;
 	{
 		annotated_unique_lock<annotated_mutex> guard(upload_lock);
-		while (upload_state == UploadState::ABORTING) {
-			upload_state_changed.wait(guard);
-		}
+		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return upload_state != UploadState::ABORTING;
+		};
+		upload_lock.Await(absl::Condition(&settled));
 		if (upload_state == UploadState::ABORTED || !upload_session) {
 			return;
 		}
@@ -183,15 +181,14 @@ void S3FileHandle::AbortUpload() {
 		annotated_unique_lock<annotated_mutex> guard(upload_lock);
 		if (!terminal_abort) {
 			upload_state = UploadState::ACTIVE;
-			upload_state_changed.notify_all();
 			return;
 		}
-		while (active_upload_calls > 0) {
-			upload_state_changed.wait(guard);
-		}
+		auto drained = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+			return active_upload_calls == 0;
+		};
+		upload_lock.Await(absl::Condition(&drained));
 		detached_session = std::move(upload_session);
 		upload_state = UploadState::ABORTED;
-		upload_state_changed.notify_all();
 	}
 	detached_session.reset();
 

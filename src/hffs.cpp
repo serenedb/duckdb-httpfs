@@ -377,8 +377,8 @@ ParsedHFUrl HuggingFaceFileSystem::HFUrlParse(const string &url) {
 	result.repo_type = url.substr(last_delim, curr_delim - last_delim);
 	if (result.repo_type != "datasets" && result.repo_type != "spaces" && !result.IsBucket()) {
 		throw IOException(
-		    "Failed to parse: '%s'. Currently DuckDB only supports querying datasets, spaces, or buckets, so the "
-		    "url should start with 'hf://datasets', 'hf://spaces', or 'hf://buckets'",
+		    "Failed to parse: '%s'. Only Hugging Face datasets, spaces, or buckets are supported, so the url should "
+		    "start with 'hf://datasets', 'hf://spaces', or 'hf://buckets'",
 		    url);
 	}
 

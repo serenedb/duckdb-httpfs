@@ -7,9 +7,6 @@ require httpfs
 # Do not ignore 'HTTP' error messages!
 set ignore_error_messages
 
-statement ok
-SET httpfs_client_implementation='curl';
-
 statement error
 INSTALL non_existent_extension;
 ----

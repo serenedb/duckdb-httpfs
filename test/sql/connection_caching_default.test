@@ -14,7 +14,7 @@ set ignore_error_messages
 
 # The registered default for the setting must report as enabled
 query I
-SELECT count(*) FROM duckdb_settings() WHERE name = 'httpfs_connection_caching' AND value = 'true';
+SELECT count(*) FROM duckdb_settings() WHERE name = 'httpfs_connection_caching' AND value = 'on';
 ----
 1
 

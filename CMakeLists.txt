@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 2.8.12...3.29)
 
 project(HTTPFsExtension)
 
-add_extension_definitions()
-
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wpessimizing-move)
 endif()
@@ -20,16 +18,10 @@ else()
       "../../third_party/mbedtls/libduckdb_mbedtls.a")
 endif()
 
-if(MINGW)
-  set(OPENSSL_USE_STATIC_LIBS TRUE)
-endif()
-
-find_package(OpenSSL REQUIRED)
-find_package(CURL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 include_directories(${CURL_INCLUDE_DIRS})
 
-include_directories(src/include ${DUCKDB_MODULE_BASE_DIR}/third_party/httplib)
+include_directories(src/include)
 add_subdirectory(src)
 set(EXTENSION_SOURCES ${ALL_OBJECT_FILES})
 
@@ -42,12 +34,13 @@ if(EMSCRIPTEN)
   target_link_libraries(httpfs_loadable_extension duckdb_mbedtls)
 else()
   # Link dependencies into extension
-  target_link_libraries(httpfs_loadable_extension ${CURL_LIBRARIES})
-  target_link_libraries(httpfs_extension ${CURL_LIBRARIES})
+  target_link_libraries(httpfs_loadable_extension CURL::libcurl)
+  target_link_libraries(httpfs_extension CURL::libcurl)
 
-  target_link_libraries(httpfs_loadable_extension duckdb_mbedtls
-                        ${OPENSSL_LIBRARIES})
-  target_link_libraries(httpfs_extension duckdb_mbedtls ${OPENSSL_LIBRARIES})
+  target_link_libraries(httpfs_loadable_extension duckdb_mbedtls OpenSSL::SSL
+                        OpenSSL::Crypto)
+  target_link_libraries(httpfs_extension duckdb_mbedtls OpenSSL::SSL
+                        OpenSSL::Crypto)
 
   if(APPLE)
     find_library(COREFOUNDATION_FRAMEWORK CoreFoundation)

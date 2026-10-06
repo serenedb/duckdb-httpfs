@@ -9,7 +9,7 @@ namespace duckdb {
 
 class HTTPFSInfoLogType : public LogType {
 public:
-	HTTPFSInfoLogType() : LogType(NAME, LogLevel::LOG_INFO) {
+	HTTPFSInfoLogType() : LogType(NAME, LEVEL) {
 	}
 
 public:
@@ -22,7 +22,7 @@ public:
 
 public:
 	static constexpr const char *NAME = "HTTPFSInfo";
-	static constexpr LogLevel LEVEL = LogLevel::LOG_INFO;
+	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
 };
 class HTTPLogger;
 class FileOpener;
@@ -97,7 +97,6 @@ public:
 	//! Read HTTPFS settings without publishing a transport reuse domain.
 	static unique_ptr<HTTPFSParams> InitializeRawParameters(HTTPFSUtil &http_util, optional_ptr<FileOpener> opener,
 	                                                        optional_ptr<FileOpenerInfo> info);
-	unique_ptr<HTTPClient> InitializeClient(HTTPParams &http_params, const string &proto_host_port) override;
 	void LogRequest(BaseRequest &request, optional_ptr<HTTPResponse> response) override;
 	HTTPTransportReusePolicy GetTransportReusePolicy() const override;
 

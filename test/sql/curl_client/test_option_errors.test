@@ -7,9 +7,6 @@ require httpfs
 set ignore_error_messages
 
 statement ok
-SET httpfs_client_implementation='curl';
-
-statement ok
 SET http_retries=0;
 
 statement ok
