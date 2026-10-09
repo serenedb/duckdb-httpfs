@@ -65,12 +65,12 @@ DROP SECRET extra_http_headers_setting_override;
 
 # SET replaces the map, so compose to add a header
 statement ok
-SET extra_http_headers = map_concat(current_setting('extra_http_headers'), MAP {'X-Setting-Three': 'three'});
+SET extra_http_headers = map_concat(current_setting('extra_http_headers')::MAP(VARCHAR, VARCHAR), MAP {'X-Setting-Three': 'three'});
 
 reconnect
 
 query II
-SELECT current_setting('extra_http_headers')['X-Setting-One'], current_setting('extra_http_headers')['X-Setting-Three'];
+SELECT (current_setting('extra_http_headers')::MAP(VARCHAR, VARCHAR))['X-Setting-One'], (current_setting('extra_http_headers')::MAP(VARCHAR, VARCHAR))['X-Setting-Three'];
 ----
 one	three
 
