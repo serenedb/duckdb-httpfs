@@ -11,7 +11,7 @@ require-env PYTHON_HTTP_SERVER_URL
 require-env PYTHON_HTTP_SERVER_DIR
 
 statement ok
-CREATE TABLE lineitem as (SELECT 1 FROM range(0,5));
+CREATE TABLE lineitem as (SELECT 1 AS "1" FROM range(0,5));
 
 statement ok
 copy lineitem to '{PYTHON_HTTP_SERVER_DIR}/relative_path_lineitem.csv'
