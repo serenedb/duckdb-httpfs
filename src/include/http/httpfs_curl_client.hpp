@@ -15,9 +15,9 @@ class HTTPFSCurlClient;
 class CURLURLHandle {
 private:
 	explicit CURLURLHandle(CURLU *handle_p);
+	friend class HTTPFSCurlClient;
 
 public:
-	CURLURLHandle();
 	CURLURLHandle(const CURLURLHandle &other);
 	~CURLURLHandle();
 
