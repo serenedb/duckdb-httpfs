@@ -157,9 +157,6 @@ uint16_t CURLHandle::GetResponseCode() {
 	return NumericCast<uint16_t>(response_code);
 }
 
-CURLURLHandle::CURLURLHandle() : CURLURLHandle(curl_url()) {
-}
-
 CURLURLHandle::CURLURLHandle(CURLU *handle_p) : handle(handle_p) {
 	if (!handle) {
 		throw InternalException("Failed to initialize CURL URL");
@@ -421,7 +418,8 @@ private:
 	};
 
 public:
-	HTTPFSCurlClient(HTTPFSParams &http_params, const string &proto_host_port) : HTTPClient(proto_host_port) {
+	HTTPFSCurlClient(HTTPFSParams &http_params, const string &proto_host_port)
+	    : HTTPClient(proto_host_port), curl_base_url(NewBaseUrl()) {
 		auto result = curl_url_set(curl_base_url.Get(), CURLUPART_URL, proto_host_port.c_str(), 0);
 		if (result != CURLUE_OK) {
 			throw IOException("Failed to initialize curl URL: %s", curl_url_strerror(result));
@@ -801,6 +799,11 @@ private:
 			}
 		}
 		++state.client_count;
+	}
+
+	static CURLU *NewBaseUrl() {
+		InitCurlGlobal();
+		return curl_url();
 	}
 
 	static void DestroyCurlGlobal() {
