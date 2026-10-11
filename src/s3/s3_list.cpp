@@ -237,7 +237,7 @@ void S3GlobResult::AppendPage(const S3ListObjectsV2Result &response) const {
 
 idx_t S3GlobResult::GetConcurrency() const {
 	auto client_context = context;
-	const auto threads = client_context ? TaskScheduler::GetScheduler(*client_context).NumberOfAsyncThreads() + 1 : 1;
+	const auto threads = client_context ? TaskScheduler::QueryAsyncThreads(*client_context) + 1 : 1;
 	return MinValue<idx_t>(threads, max_list_concurrency);
 }
 
