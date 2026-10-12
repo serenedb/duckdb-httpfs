@@ -110,7 +110,8 @@ public:
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 
 	//! S3 is object storage so directories effectively always exist
-	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	FileExistence TryDirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr,
+	                                 optional_ptr<ErrorData> error = nullptr) override;
 
 	//! HTTP request overrides.
 	unique_ptr<HTTPResponse> HeadRequest(FileHandle &handle, const string &s3_url, HTTPHeaders header_map) override;
