@@ -285,8 +285,8 @@ FileWriteMode S3FileSystem::GetWriteMode(FileHandle &) {
 	return FileWriteMode::CONCURRENT_SEQUENTIAL;
 }
 
-bool S3FileSystem::DirectoryExists(const string &, optional_ptr<FileOpener>) {
-	return true;
+FileExistence S3FileSystem::TryDirectoryExists(const string &, optional_ptr<FileOpener>, optional_ptr<ErrorData>) {
+	return FileExistence::EXISTS;
 }
 
 bool S3FileSystem::SupportsListFilesExtended() const {

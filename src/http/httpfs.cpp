@@ -561,14 +561,14 @@ FileMetadata HTTPFileSystem::Stats(FileHandle &handle) {
 	return metadata;
 }
 
-bool HTTPFileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
+FileExistence HTTPFileSystem::TryFileExists(const string &filename, optional_ptr<FileOpener> opener,
+                                            optional_ptr<ErrorData> error) {
 	try {
-		auto handle = OpenFile(filename, FileFlags::FILE_FLAGS_READ, opener);
-		(void)handle; // suppress warning
-		return true;
-	} catch (...) {
-		return false;
-	};
+		auto handle = OpenFile(filename, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
+		return handle ? FileExistence::EXISTS : FileExistence::MISSING;
+	} catch (std::exception &ex) {
+		return ClassifyExistenceFailure(ex, error);
+	}
 }
 
 bool HTTPFileSystem::CanHandleFile(const string &fpath) {
