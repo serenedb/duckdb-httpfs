@@ -167,7 +167,8 @@ public:
 	string GetVersionTag(FileHandle &handle) override;
 	optional<timestamp_t> GetCacheValidUntil(FileHandle &handle) override;
 	FileMetadata Stats(FileHandle &handle) override;
-	bool FileExists(const string &filename, optional_ptr<FileOpener> opener) override;
+	FileExistence TryFileExists(const string &filename, optional_ptr<FileOpener> opener,
+	                            optional_ptr<ErrorData> error) override;
 	void Seek(FileHandle &handle, idx_t location) override;
 	idx_t SeekPosition(FileHandle &handle) override;
 	bool CanHandleFile(const string &fpath) override;
