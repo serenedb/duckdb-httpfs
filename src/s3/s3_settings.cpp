@@ -156,7 +156,13 @@ S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S
 	} else {
 		max_parts_per_file = S3UploadConfig::DEFAULT_MAX_PARTS_PER_FILE;
 	}
-	return Create(uploader_max_filesize, max_parts_per_file, policy);
+	auto result = Create(uploader_max_filesize, max_parts_per_file, policy);
+	if (FileOpener::TryGetCurrentSetting(opener, "s3_uploader_parts_in_flight", value)) {
+		result.parts_in_flight = value.GetValue<uint64_t>();
+	} else {
+		result.parts_in_flight = S3UploadConfig::DEFAULT_PARTS_IN_FLIGHT;
+	}
+	return result;
 }
 
 idx_t S3UploadConfig::TargetPartSize(idx_t reserved_parts) const {
@@ -225,6 +231,16 @@ void S3Settings::Register(DBConfig &config) {
 	config.AddExtensionOption("s3_uploader_max_filesize", "Maximum size of an S3 upload", LogicalType::VARCHAR, "80GB");
 	config.AddExtensionOption("s3_uploader_max_parts_per_file", "Maximum number of parts in an S3 multipart upload",
 	                          LogicalType::UBIGINT, Value::UBIGINT(10000));
+	config.AddExtensionOption(
+	    "s3_uploader_parts_in_flight",
+	    "Parts of one S3 multipart upload sent at the same time, on the async threads; 1 sends each part from the "
+	    "write that fills it",
+	    LogicalType::UBIGINT, Value::UBIGINT(S3UploadConfig::DEFAULT_PARTS_IN_FLIGHT),
+	    [](ClientContext &, SetScope, Value &parameter) {
+		    if (parameter.IsNull() || parameter.GetValue<uint64_t>() == 0) {
+			    throw InvalidInputException("s3_uploader_parts_in_flight must be at least 1");
+		    }
+	    });
 	config.AddExtensionOption("s3_version_id_pinning", "Pin S3 reads to a specific object version for consistency",
 	                          LogicalType::BOOLEAN, Value(false));
 	config.AddExtensionOption("merge_http_secret_into_s3_request", "Merges HTTP secret parameters into S3 requests",

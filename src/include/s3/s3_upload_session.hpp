@@ -74,6 +74,9 @@ private:
 		vector<string> etags;
 	};
 
+	//! Sends one part on the async threads.
+	class PartUploadTask;
+
 public:
 	//! Owns one admitted write until it finishes or fails.
 	class WriteClaim {
@@ -150,6 +153,13 @@ private:
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
 
+	//! Parts sent on the async threads while the writer goes on.
+	bool UploadsInBackground() const;
+	void ScheduleUpload(PreparedPart part);
+	void UploadInBackground(PreparedPart &part) noexcept;
+	void FinishBackgroundUpload() noexcept DUCKDB_EXCLUDES(state_lock);
+	void AwaitBackgroundUploads() noexcept DUCKDB_EXCLUDES(state_lock);
+
 	//! Request diagnostics.
 	string GetDisplayPath() const;
 	static HTTPException GetStatusError(const HTTPResponse &response, const S3RequestContext &request_context);
@@ -165,6 +175,8 @@ private:
 	annotated_mutex state_lock;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
+	//! Parts being sent on the async threads; the last one to finish after a failure cleans up
+	idx_t parts_in_flight DUCKDB_GUARDED_BY(state_lock) = 0;
 
 	//! Buffered and multipart upload state.
 	idx_t next_offset DUCKDB_GUARDED_BY(state_lock) = 0;
