@@ -16,6 +16,7 @@
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context_file_opener.hpp"
+#include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include <algorithm>
@@ -510,11 +511,12 @@ static bool TryRefreshS3AuthMaterial(optional_ptr<ClientContext> context, option
 	if (!credential_refresh_enabled) {
 		return false;
 	}
-	if (!context) {
-		return false;
-	}
 	if (ReloadS3AuthMaterial(opener, path, auth_params, http_params, preserve_region)) {
 		return true;
+	}
+	// Refreshing a secret's credentials creates a secret, which takes a client context
+	if (!context) {
+		return false;
 	}
 
 	auto http_state = HTTPState::TryGetState(*context);
@@ -717,13 +719,18 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 	}
 
 	auto context = current_snapshot.client_context.lock();
-	if (!context) {
+	auto database = context ? nullptr : current_snapshot.database.lock();
+	unique_ptr<FileOpener> opener;
+	if (context) {
+		opener = make_uniq<ClientContextFileOpener>(*context);
+	} else if (database) {
+		opener = make_uniq<DatabaseFileOpener>(*database);
+	} else {
 		return false;
 	}
-	ClientContextFileOpener opener(*context);
 	auto refreshed_auth_params = current_snapshot.auth_params;
 	auto refreshed_http_params = current_snapshot.Params();
-	if (!TryRefreshS3AuthMaterial(context, opener, current_snapshot.refresh_path, refreshed_auth_params,
+	if (!TryRefreshS3AuthMaterial(context, *opener, current_snapshot.refresh_path, refreshed_auth_params,
 	                              refreshed_http_params, current_snapshot.credential_refresh_enabled,
 	                              current_snapshot.region_redirected)) {
 		return session.Capture().snapshot->Cast<S3RequestSnapshot>().credential_generation !=
@@ -748,10 +755,9 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 		}
 		auto merged_http_params = latest.Params();
 		refreshed_http_material.Apply(merged_http_params);
-		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    merged_http_params, merged_auth_params, latest.refresh_path, latest.client_context,
-		    latest.credential_refresh_enabled, latest.region_redirected, latest.credential_generation + 1,
-		    latest.multipart_upload_policy);
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(merged_http_params, latest);
+		replacement->auth_params = std::move(merged_auth_params);
+		replacement->credential_generation++;
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -768,13 +774,10 @@ bool S3RequestExecutor::SetSessionRegion(HTTPRequestSession &session, const stri
 			return false;
 		}
 
-		auto auth_params = snapshot.auth_params;
-		previous_region = auth_params.GetCredentials().region;
-		auth_params = auth_params.WithRegion(correct_region);
-		auto replacement =
-		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), auth_params, snapshot.refresh_path,
-		                                       snapshot.client_context, snapshot.credential_refresh_enabled, true,
-		                                       snapshot.credential_generation, snapshot.multipart_upload_policy);
+		previous_region = snapshot.auth_params.GetCredentials().region;
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot);
+		replacement->auth_params = snapshot.auth_params.WithRegion(correct_region);
+		replacement->region_redirected = true;
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -868,6 +871,13 @@ S3RequestSnapshot::S3RequestSnapshot(const HTTPFSParams &http_params, const S3Au
       client_context(std::move(client_context_p)), credential_refresh_enabled(credential_refresh_enabled_p),
       region_redirected(region_redirected_p), credential_generation(credential_generation_p),
       multipart_upload_policy(std::move(multipart_upload_policy_p)) {
+}
+
+S3RequestSnapshot::S3RequestSnapshot(const HTTPFSParams &http_params, const S3RequestSnapshot &other)
+    : HTTPRequestSnapshot(http_params, TYPE), auth_params(other.auth_params), refresh_path(other.refresh_path),
+      client_context(other.client_context), database(other.database),
+      credential_refresh_enabled(other.credential_refresh_enabled), region_redirected(other.region_redirected),
+      credential_generation(other.credential_generation), multipart_upload_policy(other.multipart_upload_policy) {
 }
 
 string S3RequestUtil::GetPayloadHash(EncryptionUtil &encryption_util, const_data_ptr_t buffer, idx_t buffer_len) {
