@@ -103,6 +103,8 @@ public:
 	bool OnDiskFile(FileHandle &handle) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveFiles(const vector<string> &filenames, optional_ptr<FileOpener> opener = nullptr) override;
+	//! Copies the object server side in one request (at most 5 GiB), checks the copy, then deletes the source
+	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	void FileSync(FileHandle &handle) override;
 	void AbortFileWrite(FileHandle &handle) override;
