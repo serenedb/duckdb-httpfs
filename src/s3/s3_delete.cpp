@@ -83,6 +83,7 @@ static void AddDeleteHTTPHash(hash_t &result, const S3RefreshableHTTPParams &htt
 }
 
 void S3FileSystem::RemoveFile(const string &path, optional_ptr<FileOpener> opener) {
+	EraseGlobalCacheEntry(path);
 	FileOpenerInfo info = {path};
 	auto auth_params = S3AuthResolver::Resolve(opener, info);
 	auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
@@ -306,6 +307,7 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 			throw NotImplementedException("%s is only supported for reading",
 			                              S3Provider::GetVersionParameterName(parsed_url.GetObjectVersion().GetType()));
 		}
+		EraseGlobalCacheEntry(path);
 
 		S3DeleteBatchUrlInfo url_info = {parsed_url.GetPrefix(), parsed_url.GetBucketHTTPUrl(), auth_params};
 		auto refreshable_http_params = S3RequestExecutor::ReadRefreshableHTTPParams(
