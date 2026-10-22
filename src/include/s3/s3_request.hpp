@@ -82,13 +82,16 @@ public:
 	S3RequestSnapshot(const HTTPFSParams &http_params, const S3AuthParams &auth_params_p, string refresh_path_p,
 	                  weak_ptr<ClientContext> client_context_p = {}, bool credential_refresh_enabled_p = true,
 	                  bool region_redirected_p = false, idx_t credential_generation_p = 0,
-	                  optional<S3MultipartUploadPolicy> multipart_upload_policy_p = {});
+	                  optional<S3MultipartUploadPolicy> multipart_upload_policy_p = {},
+	                  weak_ptr<DatabaseInstance> database_p = {});
 
 public:
 	static constexpr HTTPRequestSnapshotType TYPE = HTTPRequestSnapshotType::S3;
 	S3AuthParams auth_params;
 	string refresh_path;
 	weak_ptr<ClientContext> client_context;
+	//! Reloads the secret of a handle opened outside a client context
+	weak_ptr<DatabaseInstance> database;
 	bool credential_refresh_enabled;
 	bool region_redirected;
 	idx_t credential_generation;

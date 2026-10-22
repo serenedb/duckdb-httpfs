@@ -8,6 +8,7 @@
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -108,7 +109,7 @@ shared_ptr<const HTTPRequestSnapshot> S3FileHandle::CreateRequestSnapshot(const 
 	return make_shared_ptr<S3RequestSnapshot>(params, s3_snapshot.auth_params, s3_snapshot.refresh_path,
 	                                          s3_snapshot.client_context, s3_snapshot.credential_refresh_enabled,
 	                                          s3_snapshot.region_redirected, s3_snapshot.credential_generation,
-	                                          s3_snapshot.multipart_upload_policy);
+	                                          s3_snapshot.multipart_upload_policy, s3_snapshot.database);
 }
 
 S3FileHandle::~S3FileHandle() = default;
@@ -257,19 +258,24 @@ HTTPMetadataCacheEntry S3FileHandle::GetCacheEntry() const {
 
 void S3FileHandle::Initialize(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
 	auto context = FileOpener::TryGetClientContext(opener);
+	auto database = FileOpener::TryGetDatabase(opener);
 	auto refresh_enabled = S3RequestExecutor::CredentialRefreshEnabled(opener);
 	{
 		auto captured = request_session->Capture();
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
 		weak_ptr<ClientContext> weak_context;
+		weak_ptr<DatabaseInstance> weak_database;
 		if (context && refresh_enabled) {
 			weak_context = context->shared_from_this();
+		} else if (database && refresh_enabled) {
+			weak_database = database->shared_from_this();
 		}
 		request_session->TryPublish(
 		    captured.snapshot,
 		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot.auth_params, snapshot.refresh_path,
 		                                       std::move(weak_context), refresh_enabled, snapshot.region_redirected,
-		                                       snapshot.credential_generation, snapshot.multipart_upload_policy));
+		                                       snapshot.credential_generation, snapshot.multipart_upload_policy,
+		                                       std::move(weak_database)));
 	}
 	HTTPFileHandle::Initialize(file, opener);
 }
