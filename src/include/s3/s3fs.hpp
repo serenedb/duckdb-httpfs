@@ -7,6 +7,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "http/httpfs.hpp"
@@ -137,6 +138,8 @@ public:
 	//! Database services used by S3 requests and uploads.
 	EncryptionUtil &GetEncryptionUtil();
 	BufferManager &GetBufferManager();
+	//! The queue of parts sent on the async threads
+	ProducerToken &UploadProducer();
 
 protected:
 	//! FileSystem extension points for S3 reads, open/list/glob.
@@ -157,5 +160,7 @@ private:
 
 	//! Database-owned buffer manager.
 	BufferManager &buffer_manager;
+	annotated_mutex upload_producer_lock;
+	unique_ptr<ProducerToken> upload_producer DUCKDB_GUARDED_BY(upload_producer_lock);
 };
 } // namespace duckdb

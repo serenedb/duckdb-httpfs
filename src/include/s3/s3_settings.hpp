@@ -23,10 +23,13 @@ public:
 	//! Default upload limits
 	static constexpr uint64_t DEFAULT_MAX_FILESIZE = 80000000000;
 	static constexpr uint64_t DEFAULT_MAX_PARTS_PER_FILE = 10000;
+	static constexpr idx_t DEFAULT_PARTS_IN_FLIGHT = 20;
 	static constexpr idx_t PART_SIZE_TIERS = 11;
 
 	uint64_t max_file_size = 0;
 	idx_t max_parts = 0;
+	//! Parts of one upload sent at the same time; with 1 every part is sent by the write that fills it
+	idx_t parts_in_flight = 1;
 	idx_t initial_part_size = 0;
 	idx_t growth_interval = 0;
 	idx_t maximum_part_size = 0;
