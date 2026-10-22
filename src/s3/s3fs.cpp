@@ -111,7 +111,12 @@ shared_ptr<const HTTPRequestSnapshot> S3FileHandle::CreateRequestSnapshot(const 
 	                                          s3_snapshot.multipart_upload_policy);
 }
 
-S3FileHandle::~S3FileHandle() = default;
+S3FileHandle::~S3FileHandle() {
+	try {
+		AbortUpload();
+	} catch (...) { // NOLINT: a destructor cannot report the failed abort
+	}
+}
 
 void S3FileHandle::SetRegion(const string &region) {
 	string previous_region;

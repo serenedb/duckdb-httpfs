@@ -6,6 +6,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
 
 namespace duckdb {
@@ -74,6 +75,9 @@ private:
 		vector<string> etags;
 	};
 
+	//! Sends one part on the async threads.
+	class PartUploadTask;
+
 public:
 	//! Owns one admitted write until it finishes or fails.
 	class WriteClaim {
@@ -124,6 +128,11 @@ private:
 	void LatchFailureLocked(shared_ptr<const ErrorData> error, FailureDisposition disposition)
 	    DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] void FailOperation(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
+	//! Claims the cleanup of a failure once no operation or part is in flight: the multipart upload to abort, or null
+	//! when another caller owns the cleanup, it has to wait, or there is nothing to abort
+	shared_ptr<const string> ClaimCleanup() DUCKDB_REQUIRES(state_lock);
+	//! Aborts the multipart upload a cleanup claimed and completes the cleanup
+	void RunCleanup(const string &upload_id) noexcept DUCKDB_EXCLUDES(state_lock);
 	FailureSnapshot CaptureFailure() const DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] static void ThrowFailure(const FailureSnapshot &failure);
 	void ThrowIfFailed() DUCKDB_EXCLUDES(state_lock);
@@ -150,6 +159,16 @@ private:
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
 
+	//! Parts sent on the async threads while the writer goes on.
+	bool UploadsInBackground() const;
+	void ScheduleUpload(PreparedPart part);
+	void UploadInBackground(PreparedPart &part) noexcept;
+	void FinishBackgroundUpload() noexcept DUCKDB_EXCLUDES(state_lock);
+	//! Waits for the scheduled parts, sending the queued ones here: no worker may be free to send them
+	void AwaitBackgroundUploads() noexcept DUCKDB_EXCLUDES(state_lock);
+	//! A failed upload is cleaned up once its scheduled parts are done: waits for them while that is pending
+	void AwaitFailedUploads() noexcept DUCKDB_EXCLUDES(state_lock);
+
 	//! Request diagnostics.
 	string GetDisplayPath() const;
 	static HTTPException GetStatusError(const HTTPResponse &response, const S3RequestContext &request_context);
@@ -165,6 +184,10 @@ private:
 	annotated_mutex state_lock;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
+	//! Parts being sent on the async threads; the last one to finish after a failure cleans up
+	idx_t parts_in_flight DUCKDB_GUARDED_BY(state_lock) = 0;
+	//! Sends those parts, at most config.parts_in_flight at once; made by the first of them
+	unique_ptr<TaskExecutor> uploads DUCKDB_GUARDED_BY(state_lock);
 
 	//! Buffered and multipart upload state.
 	idx_t next_offset DUCKDB_GUARDED_BY(state_lock) = 0;

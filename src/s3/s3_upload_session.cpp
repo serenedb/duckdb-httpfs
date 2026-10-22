@@ -8,6 +8,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
 #include <cstring>
 
@@ -27,6 +28,35 @@ static bool IsSuccessfulStatus(HTTPStatusCode status) {
 }
 
 } // namespace
+
+class S3UploadSession::PartUploadTask : public BaseExecutorTask {
+public:
+	PartUploadTask(TaskExecutor &executor, S3UploadSession &session_p, PreparedPart part_p)
+	    : BaseExecutorTask(executor), session(session_p), part(std::move(part_p)) {
+	}
+
+	void ExecuteTask() override {
+		session.UploadInBackground(part);
+	}
+
+	void Cancel() override {
+		try {
+			session.LatchFailure(ErrorData(IOException("S3 upload of part %llu of \"%s\" was dropped before it ran",
+			                                           part.part_number, session.GetDisplayPath())),
+			                     FailureDisposition::DEFINITIVE);
+		} catch (...) { // NOLINT
+		}
+		session.FinishBackgroundUpload();
+	}
+
+	string TaskType() const override {
+		return "S3PartUploadTask";
+	}
+
+private:
+	S3UploadSession &session;
+	PreparedPart part;
+};
 
 S3UploadSession::WriteClaim::WriteClaim(S3UploadSession &session_p) : session(session_p) {
 }
@@ -80,12 +110,16 @@ void S3UploadSession::ThrowFailure(const FailureSnapshot &failure) {
 void S3UploadSession::BeginWriteOperation() DUCKDB_EXCLUDES(state_lock) {
 	FailureSnapshot failure;
 	const char *error_message = nullptr;
+	AwaitFailedUploads();
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
 		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
 			return !primary_failure.primary_error || cleanup_state == CleanupState::COMPLETE;
 		};
-		state_lock.Await(absl::Condition(&settled));
+		if (!settled()) {
+			TaskScheduler::BlockingScope blocking;
+			state_lock.Await(absl::Condition(&settled));
+		}
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (lifecycle_state == LifecycleState::ABORTING || lifecycle_state == LifecycleState::ABORTED) {
@@ -113,12 +147,16 @@ unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::BeginFinalize(bool &a
 	FailureSnapshot failure;
 	unique_ptr<BufferedPart> result;
 	already_finalized = false;
+	AwaitFailedUploads();
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
 		auto settled = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
 			return !primary_failure.primary_error || cleanup_state == CleanupState::COMPLETE;
 		};
-		state_lock.Await(absl::Condition(&settled));
+		if (!settled()) {
+			TaskScheduler::BlockingScope blocking;
+			state_lock.Await(absl::Condition(&settled));
+		}
 		if (primary_failure.primary_error) {
 			failure = CaptureFailure();
 		} else if (lifecycle_state == LifecycleState::ABORTING || lifecycle_state == LifecycleState::ABORTED) {
@@ -186,48 +224,65 @@ void S3UploadSession::LatchFailure(ErrorData error, FailureDisposition dispositi
 
 void S3UploadSession::ReleaseOperation() DUCKDB_EXCLUDES(state_lock) {
 	shared_ptr<const string> upload_id;
-	bool cleanup_owner = false;
 	FailureSnapshot failure;
 	{
-		annotated_unique_lock<annotated_mutex> guard(state_lock);
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
 		D_ASSERT(active_operations > 0);
-		active_operations--;
 		if (!primary_failure.primary_error) {
+			active_operations--;
 			return;
 		}
-
-		if (active_operations == 0 && cleanup_state == CleanupState::NONE) {
-			if (failure_disposition == FailureDisposition::DEFINITIVE && multipart_upload_id && !abort_suppressed) {
-				cleanup_state = CleanupState::IN_PROGRESS;
-				upload_id = multipart_upload_id;
-				cleanup_owner = true;
-			} else {
-				cleanup_state = CleanupState::COMPLETE;
-			}
-		}
+	}
+	// still counted as active, so that no part claims the cleanup before this operation does
+	AwaitBackgroundUploads();
+	{
+		annotated_unique_lock<annotated_mutex> guard(state_lock);
+		active_operations--;
+		upload_id = ClaimCleanup();
 		auto cleaned_up = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
-			return cleanup_owner || cleanup_state == CleanupState::COMPLETE;
+			return upload_id || cleanup_state == CleanupState::COMPLETE;
 		};
-		state_lock.Await(absl::Condition(&cleaned_up));
-		if (!cleanup_owner) {
+		if (!cleaned_up()) {
+			TaskScheduler::BlockingScope blocking;
+			state_lock.Await(absl::Condition(&cleaned_up));
+		}
+		if (!upload_id) {
 			failure = CaptureFailure();
 		}
 	}
 
-	shared_ptr<const ErrorData> abort_error;
-	if (cleanup_owner) {
-		D_ASSERT(upload_id);
-		abort_error = AbortMultipartUpload(*upload_id);
-		{
-			annotated_lock_guard<annotated_mutex> guard(state_lock);
-			if (abort_error && !primary_failure.abort_error) {
-				primary_failure.abort_error = std::move(abort_error);
-			}
-			cleanup_state = CleanupState::COMPLETE;
-			failure = CaptureFailure();
-		}
+	if (upload_id) {
+		RunCleanup(*upload_id);
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		failure = CaptureFailure();
 	}
 	ThrowFailure(failure);
+}
+
+shared_ptr<const string> S3UploadSession::ClaimCleanup() DUCKDB_REQUIRES(state_lock) {
+	if (!primary_failure.primary_error || active_operations != 0 || parts_in_flight != 0 ||
+	    cleanup_state != CleanupState::NONE) {
+		return nullptr;
+	}
+	if (failure_disposition != FailureDisposition::DEFINITIVE || !multipart_upload_id || abort_suppressed) {
+		cleanup_state = CleanupState::COMPLETE;
+		return nullptr;
+	}
+	cleanup_state = CleanupState::IN_PROGRESS;
+	return multipart_upload_id;
+}
+
+void S3UploadSession::RunCleanup(const string &upload_id) noexcept DUCKDB_EXCLUDES(state_lock) {
+	shared_ptr<const ErrorData> abort_error;
+	try {
+		abort_error = AbortMultipartUpload(upload_id);
+	} catch (...) { // NOLINT
+	}
+	annotated_lock_guard<annotated_mutex> guard(state_lock);
+	if (abort_error && !primary_failure.abort_error) {
+		primary_failure.abort_error = std::move(abort_error);
+	}
+	cleanup_state = CleanupState::COMPLETE;
 }
 
 void S3UploadSession::FailOperation(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock) {
@@ -581,7 +636,11 @@ S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t 
 		auto write = PrepareWrite(data, size, location);
 		for (auto &part : write.parts) {
 			ThrowIfFailed();
-			UploadPart(part);
+			if (part.buffered_part && UploadsInBackground()) {
+				ScheduleUpload(std::move(part));
+			} else {
+				UploadPart(part);
+			}
 		}
 		return claim;
 	} catch (S3AmbiguousUploadException &ex) {
@@ -620,6 +679,7 @@ void S3UploadSession::Finalize() {
 				D_ASSERT(final_write.parts.size() == 1);
 				UploadPart(final_write.parts.front());
 			}
+			AwaitBackgroundUploads();
 			ThrowIfFailed();
 			CompleteMultipartUpload();
 		}
@@ -651,10 +711,19 @@ bool S3UploadSession::Abort() {
 
 		D_ASSERT(lifecycle_state == LifecycleState::ACTIVE);
 		lifecycle_state = LifecycleState::ABORTING;
-		auto drained = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
+		auto idle = [&]() DUCKDB_NO_THREAD_SAFETY_ANALYSIS {
 			return active_operations == 0;
 		};
-		state_lock.Await(absl::Condition(&drained));
+		if (!idle()) {
+			TaskScheduler::BlockingScope blocking;
+			state_lock.Await(absl::Condition(&idle));
+		}
+	}
+	// no operation is left to schedule a part, so the ones scheduled are the last
+	AwaitBackgroundUploads();
+	{
+		annotated_unique_lock<annotated_mutex> guard(state_lock);
+		D_ASSERT(active_operations == 0 && parts_in_flight == 0);
 		discarded_buffer = std::move(buffered_part);
 
 		if (primary_failure.primary_error) {
@@ -695,6 +764,90 @@ bool S3UploadSession::Abort() {
 		abort_error->Throw();
 	}
 	return true;
+}
+
+bool S3UploadSession::UploadsInBackground() const {
+	if (config.parts_in_flight <= 1) {
+		return false;
+	}
+	auto &scheduler = TaskScheduler::GetScheduler(s3fs.get().GetBufferManager().GetDatabase());
+	return scheduler.HasWorkers() && scheduler.NumberOfAsyncThreads() != 0;
+}
+
+void S3UploadSession::ScheduleUpload(PreparedPart part) {
+	FailureSnapshot failure;
+	optional_ptr<TaskExecutor> executor;
+	{
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		if (primary_failure.primary_error) {
+			failure = CaptureFailure();
+		} else {
+			if (!uploads) {
+				uploads = make_uniq<TaskExecutor>(
+				    TaskScheduler::GetScheduler(s3fs.get().GetBufferManager().GetDatabase()), TaskSchedulerType::ASYNC);
+			}
+			executor = uploads.get();
+		}
+	}
+	if (failure.primary_error) {
+		ThrowFailure(failure);
+	}
+	// counted once nothing can fail before the executor takes the task, which then settles the count on every path
+	auto task = make_uniq<PartUploadTask>(*executor, *this, std::move(part));
+	{
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		parts_in_flight++;
+	}
+	executor->ScheduleTask(std::move(task), config.parts_in_flight);
+}
+
+void S3UploadSession::UploadInBackground(PreparedPart &part) noexcept {
+	try {
+		try {
+			UploadPart(part);
+		} catch (S3AmbiguousUploadException &ex) {
+			LatchFailure(ErrorData(ex), FailureDisposition::AMBIGUOUS);
+		} catch (std::exception &ex) {
+			LatchFailure(ErrorData(ex), FailureDisposition::DEFINITIVE);
+		}
+	} catch (...) { // NOLINT
+	}
+	part.buffered_part.reset();
+	FinishBackgroundUpload();
+}
+
+void S3UploadSession::FinishBackgroundUpload() noexcept {
+	shared_ptr<const string> upload_id;
+	{
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		D_ASSERT(parts_in_flight > 0);
+		parts_in_flight--;
+		upload_id = ClaimCleanup();
+	}
+	if (upload_id) {
+		RunCleanup(*upload_id);
+	}
+}
+
+void S3UploadSession::AwaitBackgroundUploads() noexcept {
+	optional_ptr<TaskExecutor> executor;
+	{
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		executor = uploads.get();
+	}
+	if (executor) {
+		executor->Join();
+	}
+}
+
+void S3UploadSession::AwaitFailedUploads() noexcept {
+	{
+		annotated_lock_guard<annotated_mutex> guard(state_lock);
+		if (!primary_failure.primary_error || cleanup_state == CleanupState::COMPLETE) {
+			return;
+		}
+	}
+	AwaitBackgroundUploads();
 }
 
 } // namespace duckdb
