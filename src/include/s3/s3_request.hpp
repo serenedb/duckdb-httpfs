@@ -46,7 +46,8 @@ enum class S3RequestOperation : uint8_t {
 	CREATE_MULTIPART_UPLOAD,
 	UPLOAD_PART,
 	COMPLETE_MULTIPART_UPLOAD,
-	ABORT_MULTIPART_UPLOAD
+	ABORT_MULTIPART_UPLOAD,
+	COPY_OBJECT
 };
 enum class S3ReceivedResponseAction : uint8_t { ACCEPT, RETRY_FRESH_CONNECTION };
 
@@ -123,6 +124,8 @@ struct S3RequestSpec {
 	string content_md5;
 	HTTPObjectVersion object_version;
 	HTTPReadCondition read_condition;
+	//! Headers added to the request before it is signed
+	HTTPHeaders extra_headers;
 };
 
 struct S3RequestData {
@@ -155,7 +158,8 @@ struct S3RequestUtil {
 	                                 const S3AuthParams &auth_params, string date_now = "", string datetime_now = "",
 	                                 string payload_hash = "", string content_type = "", string content_md5 = "",
 	                                 const HTTPConfiguredHeaders &configured_headers = {},
-	                                 const HTTPReadCondition &read_condition = {});
+	                                 const HTTPReadCondition &read_condition = {},
+	                                 const HTTPHeaders &extra_headers = {});
 	static string GetPayloadHash(EncryptionUtil &encryption_util, const_data_ptr_t buffer, idx_t buffer_len);
 	static bool IsRequestTimeout(const HTTPResponse &response);
 	static bool IsRetryableReceivedResponse(const HTTPResponse &response);
