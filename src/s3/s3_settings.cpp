@@ -162,6 +162,7 @@ S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S
 	} else {
 		result.parts_in_flight = S3UploadConfig::DEFAULT_PARTS_IN_FLIGHT;
 	}
+	result.checksum = !FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value) || value.GetValue<bool>();
 	return result;
 }
 
@@ -241,6 +242,10 @@ void S3Settings::Register(DBConfig &config) {
 			    throw InvalidInputException("s3_uploader_parts_in_flight must be at least 1");
 		    }
 	    });
+	config.AddExtensionOption("s3_upload_checksum",
+	                          "Send the CRC32C of every S3 upload, which the store checks against the bytes it "
+	                          "receives and keeps with the object; for stores that refuse checksums, turn it off",
+	                          LogicalType::BOOLEAN, Value(true));
 	config.AddExtensionOption("s3_version_id_pinning", "Pin S3 reads to a specific object version for consistency",
 	                          LogicalType::BOOLEAN, Value(false));
 	config.AddExtensionOption("merge_http_secret_into_s3_request", "Merges HTTP secret parameters into S3 requests",

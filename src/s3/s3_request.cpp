@@ -886,44 +886,43 @@ string S3RequestUtil::GetPayloadHash(EncryptionUtil &encryption_util, const_data
 
 S3RequestResult S3FileSystem::PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &url,
                                           string &result, const_data_ptr_t buffer_in, idx_t buffer_in_len,
-                                          const S3RequestQuery &query) {
+                                          const S3RequestQuery &query, HTTPHeaders extra_headers) {
 	if (S3RequestUtil::GetOperationInfo(operation).request_type != RequestType::POST_REQUEST) {
 		throw InternalException("S3 PostRequest requires a POST operation");
 	}
 	auto payload_hash = S3RequestUtil::GetPayloadHash(GetEncryptionUtil(), buffer_in, buffer_in_len);
 	const string content_type = "application/octet-stream";
-	return S3RequestExecutor::RunSession(
-	    GetEncryptionUtil(), session,
-	    S3RequestSpec {url, operation, [&](const ParsedS3Url &) { return query; }, payload_hash, content_type, ""},
-	    [&](S3RequestData &request_data) {
-		    result.clear();
-		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
-		    return RunPostRequest(request_data.http_url, request_data.headers, params, result, buffer_in, buffer_in_len,
-		                          [&](BaseRequest &request) {
-			                          request.try_request = true;
-			                          return S3RequestExecutor::SendSessionRequest(session, request_data, request);
-		                          });
-	    });
+	S3RequestSpec spec {url, operation, [&](const ParsedS3Url &) { return query; }, payload_hash, content_type, ""};
+	spec.extra_headers = std::move(extra_headers);
+	return S3RequestExecutor::RunSession(GetEncryptionUtil(), session, spec, [&](S3RequestData &request_data) {
+		result.clear();
+		auto &params = request_data.http_params->Cast<HTTPFSParams>();
+		return RunPostRequest(request_data.http_url, request_data.headers, params, result, buffer_in, buffer_in_len,
+		                      [&](BaseRequest &request) {
+			                      request.try_request = true;
+			                      return S3RequestExecutor::SendSessionRequest(session, request_data, request);
+		                      });
+	});
 }
 
 S3RequestResult S3FileSystem::PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &url,
-                                         const_data_ptr_t buffer_in, idx_t buffer_in_len, const S3RequestQuery &query) {
+                                         const_data_ptr_t buffer_in, idx_t buffer_in_len, const S3RequestQuery &query,
+                                         HTTPHeaders extra_headers) {
 	if (S3RequestUtil::GetOperationInfo(operation).request_type != RequestType::PUT_REQUEST) {
 		throw InternalException("S3 PutRequest requires a PUT operation");
 	}
 	auto payload_hash = S3RequestUtil::GetPayloadHash(GetEncryptionUtil(), buffer_in, buffer_in_len);
 	const string content_type = "application/octet-stream";
-	return S3RequestExecutor::RunSession(
-	    GetEncryptionUtil(), session,
-	    S3RequestSpec {url, operation, [&](const ParsedS3Url &) { return query; }, payload_hash, content_type, ""},
-	    [&](S3RequestData &request_data) {
-		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
-		    return RunPutRequest(request_data.http_url, request_data.headers, params, buffer_in, buffer_in_len,
-		                         content_type, [&](BaseRequest &request) {
-			                         request.try_request = true;
-			                         return S3RequestExecutor::SendSessionRequest(session, request_data, request);
-		                         });
-	    });
+	S3RequestSpec spec {url, operation, [&](const ParsedS3Url &) { return query; }, payload_hash, content_type, ""};
+	spec.extra_headers = std::move(extra_headers);
+	return S3RequestExecutor::RunSession(GetEncryptionUtil(), session, spec, [&](S3RequestData &request_data) {
+		auto &params = request_data.http_params->Cast<HTTPFSParams>();
+		return RunPutRequest(request_data.http_url, request_data.headers, params, buffer_in, buffer_in_len,
+		                     content_type, [&](BaseRequest &request) {
+			                     request.try_request = true;
+			                     return S3RequestExecutor::SendSessionRequest(session, request_data, request);
+		                     });
+	});
 }
 
 void S3FileSystem::ValidateResponseVersion(HTTPFileHandle &handle, const HTTPReadConfig &read_config,

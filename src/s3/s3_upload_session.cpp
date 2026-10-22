@@ -8,6 +8,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/blob.hpp"
 #include "duckdb/parallel/task.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -26,6 +27,13 @@ public:
 static bool IsSuccessfulStatus(HTTPStatusCode status) {
 	auto status_code = static_cast<int>(status);
 	return status_code >= 200 && status_code < 300;
+}
+
+static string EncodeChecksum(absl::crc32c_t checksum) {
+	const auto value = static_cast<uint32_t>(checksum);
+	const char bytes[] = {static_cast<char>(value >> 24), static_cast<char>(value >> 16), static_cast<char>(value >> 8),
+	                      static_cast<char>(value)};
+	return Blob::ToBase64(string_t(bytes, sizeof(bytes)));
 }
 
 } // namespace
@@ -322,6 +330,7 @@ void S3UploadSession::ReservePart(PreparedWrite &write, const_data_ptr_t data, i
 	}
 	auto part_number = part_etags.size() + 1;
 	part_etags.emplace_back();
+	part_checksums.emplace_back();
 	write.parts.emplace_back(part_number, data, size);
 }
 
@@ -332,6 +341,7 @@ void S3UploadSession::ReservePart(PreparedWrite &write, unique_ptr<BufferedPart>
 	}
 	auto part_number = part_etags.size() + 1;
 	part_etags.emplace_back();
+	part_checksums.emplace_back();
 	write.parts.emplace_back(part_number, std::move(buffered_part_p));
 }
 
@@ -352,6 +362,9 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 		} else if (size > config.max_file_size - next_offset) {
 			throw IOException("S3 upload exceeds the configured maximum file size of %llu bytes", config.max_file_size);
 		} else {
+			if (config.checksum) {
+				checksum = absl::ExtendCrc32c(checksum, absl::string_view(const_char_ptr_cast(data), size));
+			}
 			result.buffered_part = std::move(buffered_part);
 			idx_t input_offset = 0;
 			if (result.buffered_part && size > 0) {
@@ -393,8 +406,14 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 
 string S3UploadSession::InitializeMultipartUpload() {
 	string result;
-	auto request_result = s3fs.get().PostRequest(*request_session, S3RequestOperation::CREATE_MULTIPART_UPLOAD, path,
-	                                             result, nullptr, 0, S3RequestQuery({{"uploads", ""}}));
+	HTTPHeaders headers;
+	if (config.checksum) {
+		headers["x-amz-checksum-algorithm"] = "CRC32C";
+		headers["x-amz-checksum-type"] = "FULL_OBJECT";
+	}
+	auto request_result =
+	    s3fs.get().PostRequest(*request_session, S3RequestOperation::CREATE_MULTIPART_UPLOAD, path, result, nullptr, 0,
+	                           S3RequestQuery({{"uploads", ""}}), std::move(headers));
 	auto &response = request_result.response;
 	auto &request_context = request_result.context;
 	if (response->HasRequestError()) {
@@ -499,8 +518,8 @@ void S3UploadSession::ThrowIfFailed() DUCKDB_EXCLUDES(state_lock) {
 }
 
 S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
-                                                  const S3RequestQuery &query) {
-	auto result = s3fs.get().PutRequest(*request_session, operation, path, data, size, query);
+                                                  const S3RequestQuery &query, HTTPHeaders headers) {
+	auto result = s3fs.get().PutRequest(*request_session, operation, path, data, size, query, std::move(headers));
 	if (result.response->HasRequestError()) {
 		throw IOException("S3 upload request for \"%s\" could not be completed: %s", result.context.display_url,
 		                  result.response->GetRequestError());
@@ -509,10 +528,18 @@ S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, 
 }
 
 void S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
-	auto request_result = RunUploadRequest(S3RequestOperation::PUT_OBJECT, data, size, S3RequestQuery());
+	HTTPHeaders headers;
+	if (config.checksum) {
+		headers["x-amz-checksum-crc32c"] = EncodeChecksum(Checksum());
+	}
+	auto request_result =
+	    RunUploadRequest(S3RequestOperation::PUT_OBJECT, data, size, S3RequestQuery(), std::move(headers));
 	auto &response = request_result.response;
 	if (response->status != HTTPStatusCode::OK_200 && response->status != HTTPStatusCode::Created_201) {
 		throw GetStatusError(*response, request_result.context);
+	}
+	if (response->headers.HasHeader("ETag")) {
+		SetUploadedETag(response->headers.GetHeaderValue("ETag"));
 	}
 }
 
@@ -521,7 +548,14 @@ void S3UploadSession::UploadPart(PreparedPart &part) {
 	ThrowIfFailed();
 	D_ASSERT(upload_id);
 	S3RequestQuery query {{"partNumber", to_string(part.part_number)}, {"uploadId", *upload_id}};
-	auto request_result = RunUploadRequest(S3RequestOperation::UPLOAD_PART, part.data, part.size, query);
+	absl::crc32c_t part_checksum {0};
+	HTTPHeaders headers;
+	if (config.checksum) {
+		part_checksum = absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(part.data), part.size));
+		headers["x-amz-checksum-crc32c"] = EncodeChecksum(part_checksum);
+	}
+	auto request_result =
+	    RunUploadRequest(S3RequestOperation::UPLOAD_PART, part.data, part.size, query, std::move(headers));
 	auto &response = request_result.response;
 	if (response->status != HTTPStatusCode::OK_200) {
 		throw GetStatusError(*response, request_result.context);
@@ -533,10 +567,11 @@ void S3UploadSession::UploadPart(PreparedPart &part) {
 	if (etag.empty()) {
 		throw IOException("Unexpected response when uploading to S3");
 	}
-	StorePartETag(part.part_number, std::move(etag));
+	StorePartETag(part.part_number, std::move(etag), part_checksum);
 }
 
-void S3UploadSession::StorePartETag(idx_t part_number, string etag) DUCKDB_EXCLUDES(state_lock) {
+void S3UploadSession::StorePartETag(idx_t part_number, string etag, absl::crc32c_t part_checksum)
+    DUCKDB_EXCLUDES(state_lock) {
 	FailureSnapshot failure;
 	{
 		annotated_lock_guard<annotated_mutex> guard(state_lock);
@@ -547,6 +582,7 @@ void S3UploadSession::StorePartETag(idx_t part_number, string etag) DUCKDB_EXCLU
 			D_ASSERT(part_number <= part_etags.size());
 			D_ASSERT(part_etags[part_number - 1].empty());
 			part_etags[part_number - 1] = std::move(etag);
+			part_checksums[part_number - 1] = part_checksum;
 		}
 	}
 	if (failure.primary_error) {
@@ -562,19 +598,43 @@ S3UploadSession::MultipartSnapshot S3UploadSession::GetMultipartSnapshot() DUCKD
 			throw IOException("S3 multipart upload is missing a completed part");
 		}
 	}
-	return {multipart_upload_id, part_etags};
+	return {multipart_upload_id, part_etags, part_checksums, checksum};
+}
+
+absl::crc32c_t S3UploadSession::Checksum() const DUCKDB_EXCLUDES(state_lock) {
+	annotated_lock_guard<annotated_mutex> guard(state_lock);
+	return checksum;
+}
+
+void S3UploadSession::SetUploadedETag(string etag) DUCKDB_EXCLUDES(state_lock) {
+	annotated_lock_guard<annotated_mutex> guard(state_lock);
+	uploaded_etag = std::move(etag);
+}
+
+string S3UploadSession::UploadedETag() const DUCKDB_EXCLUDES(state_lock) {
+	annotated_lock_guard<annotated_mutex> guard(state_lock);
+	return uploaded_etag;
 }
 
 void S3UploadSession::CompleteMultipartUpload() {
 	auto snapshot = GetMultipartSnapshot();
 	D_ASSERT(snapshot.upload_id);
-	auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest(snapshot.etags);
+	vector<string> part_checksums;
+	HTTPHeaders headers;
+	if (config.checksum) {
+		for (auto part_checksum : snapshot.part_checksums) {
+			part_checksums.push_back(EncodeChecksum(part_checksum));
+		}
+		headers["x-amz-checksum-crc32c"] = EncodeChecksum(snapshot.checksum);
+		headers["x-amz-checksum-type"] = "FULL_OBJECT";
+	}
+	auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest(snapshot.etags, part_checksums);
 
 	S3RequestQuery query {{"uploadId", *snapshot.upload_id}};
 	string result;
-	auto request_result =
-	    s3fs.get().PostRequest(*request_session, S3RequestOperation::COMPLETE_MULTIPART_UPLOAD, path, result,
-	                           const_data_ptr_cast(completion_body.data()), completion_body.size(), query);
+	auto request_result = s3fs.get().PostRequest(*request_session, S3RequestOperation::COMPLETE_MULTIPART_UPLOAD, path,
+	                                             result, const_data_ptr_cast(completion_body.data()),
+	                                             completion_body.size(), query, std::move(headers));
 	auto &response = request_result.response;
 	auto &request_context = request_result.context;
 	if (response->HasRequestError()) {
@@ -606,6 +666,7 @@ void S3UploadSession::CompleteMultipartUpload() {
 		                                                    "aborted",
 		                                                    request_context.display_url));
 	}
+	SetUploadedETag(std::move(parsed_response.etag));
 }
 
 string S3UploadSession::GetDisplayPath() const {

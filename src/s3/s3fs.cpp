@@ -126,6 +126,7 @@ void S3FileHandle::FinalizeUpload() {
 	auto upload_claim = ClaimUpload(false);
 	if (upload_claim) {
 		upload_claim.Get().Finalize();
+		etag = upload_claim.Get().UploadedETag();
 	}
 }
 
@@ -228,6 +229,7 @@ unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, 
 	if (flags.OpenForWriting()) {
 		multipart_upload_policy = auth_params.GetProvider().GetMultipartUploadPolicy();
 		upload_config = S3UploadConfig::ReadFrom(opener, *multipart_upload_policy);
+		upload_config.checksum = upload_config.checksum && auth_params.GetProvider().SupportsFullObjectChecksum();
 	}
 
 	return make_uniq<S3FileHandle>(*this, file, flags, std::move(request_session), auth_params, upload_config,
