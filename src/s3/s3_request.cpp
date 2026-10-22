@@ -373,7 +373,7 @@ HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const 
                                          const S3AuthParams &auth_params, string date_now, string datetime_now,
                                          string payload_hash, string content_type, string content_md5,
                                          const HTTPConfiguredHeaders &configured_headers,
-                                         const HTTPReadCondition &read_condition) {
+                                         const HTTPReadCondition &read_condition, const HTTPHeaders &extra_headers) {
 	const auto &host = parsed_url.GetHost();
 	auto &operation_info = GetOperationInfo(operation);
 	const auto &encoded_path = operation_info.target == S3RequestTarget::BUCKET ? parsed_url.GetEncodedBucketPath()
@@ -382,6 +382,9 @@ HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const 
 	auto &credentials = auth_params.GetCredentials();
 	auto &request_options = auth_params.GetRequestOptions();
 	auto headers = CreateConfiguredS3Headers(configured_headers, provider.GetType());
+	for (const auto &header : extra_headers) {
+		headers[header.first] = header.second;
+	}
 	provider.ApplyReadCondition(read_condition, headers);
 	if (provider.GetType() == S3ProviderType::GCS && !request_options.user_project.empty()) {
 		headers["x-goog-user-project"] = request_options.user_project;
@@ -552,9 +555,10 @@ S3RequestData S3RequestExecutor::CreateRequestData(EncryptionUtil &encryption_ut
 	result.http_url = operation_info.target == S3RequestTarget::BUCKET
 	                      ? parsed_s3_url.GetBucketHTTPUrl(query.WireQuery())
 	                      : parsed_s3_url.GetHTTPUrl(query.WireQuery());
-	result.headers = S3RequestUtil::CreateHeaders(
-	    encryption_util, parsed_s3_url, spec.operation, query, result.auth_params, "", "", spec.payload_hash,
-	    spec.content_type, spec.content_md5, session_request.configured_headers, spec.read_condition);
+	result.headers =
+	    S3RequestUtil::CreateHeaders(encryption_util, parsed_s3_url, spec.operation, query, result.auth_params, "", "",
+	                                 spec.payload_hash, spec.content_type, spec.content_md5,
+	                                 session_request.configured_headers, spec.read_condition, spec.extra_headers);
 	return result;
 }
 
