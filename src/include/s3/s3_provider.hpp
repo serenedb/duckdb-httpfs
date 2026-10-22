@@ -100,6 +100,7 @@ public:
 	S3MultipartUploadPolicy GetMultipartUploadPolicy() const;
 	idx_t GetBulkDeleteMaxBatchSize() const;
 	bool SupportsSSECustomerKey() const;
+	bool SupportsFullObjectChecksum() const;
 	string GetBadRequestError(const S3AuthParams &auth_params, const string &correct_region = "") const;
 	string GetAuthError(const S3AuthParams &auth_params) const;
 
