@@ -804,11 +804,17 @@ string S3XMLWriter::WriteDeleteObjectsRequest(const vector<string> &keys, idx_t 
 	return result;
 }
 
-string S3XMLWriter::WriteCompleteMultipartUploadRequest(const vector<string> &etags) {
+string S3XMLWriter::WriteCompleteMultipartUploadRequest(const vector<string> &etags,
+                                                        const vector<string> &crc32c_checksums) {
+	D_ASSERT(crc32c_checksums.empty() || crc32c_checksums.size() == etags.size());
 	string result = "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">";
 	for (idx_t part_index = 0; part_index < etags.size(); part_index++) {
-		result += "<Part><ETag>" + EscapeText(etags[part_index]) + "</ETag><PartNumber>" +
-		          std::to_string(part_index + 1) + "</PartNumber></Part>";
+		result += "<Part>";
+		if (!crc32c_checksums.empty()) {
+			result += "<ChecksumCRC32C>" + EscapeText(crc32c_checksums[part_index]) + "</ChecksumCRC32C>";
+		}
+		result += "<ETag>" + EscapeText(etags[part_index]) + "</ETag><PartNumber>" + std::to_string(part_index + 1) +
+		          "</PartNumber></Part>";
 	}
 	result += "</CompleteMultipartUpload>";
 	return result;

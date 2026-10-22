@@ -6,7 +6,10 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/main/http/http_util.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
+
+#include <absl/crc/crc32c.h>
 
 namespace duckdb {
 
@@ -72,6 +75,8 @@ private:
 	struct MultipartSnapshot {
 		shared_ptr<const string> upload_id;
 		vector<string> etags;
+		vector<absl::crc32c_t> part_checksums;
+		absl::crc32c_t checksum {0};
 	};
 
 	//! Sends one part on the async threads.
@@ -112,6 +117,7 @@ public:
 	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location);
 	void Finalize();
 	bool Abort();
+	string UploadedETag() const DUCKDB_EXCLUDES(state_lock);
 
 private:
 	//! Operation admission and lifecycle transitions.
@@ -142,13 +148,15 @@ private:
 	shared_ptr<const string> EnsureMultipartUpload();
 	void PublishInitializationFailure(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
 	string InitializeMultipartUpload();
-	void StorePartETag(idx_t part_number, string etag) DUCKDB_EXCLUDES(state_lock);
+	void StorePartETag(idx_t part_number, string etag, absl::crc32c_t checksum) DUCKDB_EXCLUDES(state_lock);
 	MultipartSnapshot GetMultipartSnapshot() DUCKDB_EXCLUDES(state_lock);
 	void CompleteMultipartUpload();
+	absl::crc32c_t Checksum() const DUCKDB_EXCLUDES(state_lock);
+	void SetUploadedETag(string etag) DUCKDB_EXCLUDES(state_lock);
 
 	//! S3 upload and cleanup requests.
 	S3RequestResult RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
-	                                 const S3RequestQuery &query);
+	                                 const S3RequestQuery &query, HTTPHeaders headers);
 	void UploadObject(const_data_ptr_t data, idx_t size);
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
@@ -172,7 +180,7 @@ private:
 	const S3UploadConfig config;
 
 	//! Operation and lifecycle synchronization.
-	annotated_mutex state_lock;
+	mutable annotated_mutex state_lock;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
 	//! Parts being sent on the async threads; the last one to finish after a failure cleans up
@@ -184,6 +192,9 @@ private:
 	InitializationState initialization_state DUCKDB_GUARDED_BY(state_lock) = InitializationState::NOT_STARTED;
 	shared_ptr<const string> multipart_upload_id DUCKDB_GUARDED_BY(state_lock);
 	vector<string> part_etags DUCKDB_GUARDED_BY(state_lock);
+	vector<absl::crc32c_t> part_checksums DUCKDB_GUARDED_BY(state_lock);
+	absl::crc32c_t checksum DUCKDB_GUARDED_BY(state_lock) {0};
+	string uploaded_etag DUCKDB_GUARDED_BY(state_lock);
 
 	//! Latched failure and cleanup state.
 	FailureSnapshot primary_failure DUCKDB_GUARDED_BY(state_lock);

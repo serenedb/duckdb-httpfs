@@ -56,7 +56,8 @@ struct S3XMLResponseParser {
 struct S3XMLWriter {
 	static string EscapeText(const string &text);
 	static string WriteDeleteObjectsRequest(const vector<string> &keys, idx_t begin, idx_t end);
-	static string WriteCompleteMultipartUploadRequest(const vector<string> &etags);
+	static string WriteCompleteMultipartUploadRequest(const vector<string> &etags,
+	                                                  const vector<string> &crc32c_checksums);
 };
 
 } // namespace duckdb

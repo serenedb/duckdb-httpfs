@@ -125,10 +125,10 @@ public:
 	                                         data_ptr_t buffer_out, idx_t buffer_out_len) override;
 	S3RequestResult PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                            const S3RequestQuery &query = S3RequestQuery());
+	                            const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                           const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                           const S3RequestQuery &query = S3RequestQuery());
+	                           const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult DeleteRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                              const S3RequestQuery &query);
 	unique_ptr<HTTPResponse> DeleteRequest(FileHandle &handle, const string &s3_url, HTTPHeaders header_map) override;
