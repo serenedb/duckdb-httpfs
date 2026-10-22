@@ -40,6 +40,7 @@ void S3FileSystem::MoveFile(const string &source, const string &target, optional
 	if (response->status != HTTPStatusCode::OK_200) {
 		throw S3RequestUtil::GetRequestError(request_result.context, *response);
 	}
+	EraseGlobalCacheEntry(target);
 	auto copied = OpenFile(target, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
 	if (!copied || copied->GetFileSize() != source_size) {
 		throw IOException("S3 copy of \"%s\" to \"%s\" did not produce the object; the source is kept", source,
