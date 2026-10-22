@@ -65,7 +65,9 @@ static void SetHTTPConnectionCaching(ClientContext &context, SetScope scope, Val
 }
 
 void HTTPSettings::Register(DBConfig &config) {
-	config.AddExtensionOption("http_timeout", "HTTP timeout read/write/connection/retry (in seconds)",
+	config.AddExtensionOption("http_timeout",
+	                          "HTTP timeout read/write/connection/retry (in seconds); a ranged read fails after this "
+	                          "many seconds plus one per MiB it asks for",
 	                          LogicalType::UBIGINT, Value::UBIGINT(HTTPParams::DEFAULT_TIMEOUT_SECONDS));
 	config.AddExtensionOption("http_retries", "HTTP retries on I/O error", LogicalType::UBIGINT,
 	                          Value::UBIGINT(HTTPParams::DEFAULT_RETRIES));
