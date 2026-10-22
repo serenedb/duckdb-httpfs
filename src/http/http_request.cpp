@@ -278,6 +278,7 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
 	    [&](const_data_ptr_t data, idx_t data_length) { return context.HandleContent(data, data_length); });
 
 	get_request.try_request = read_config.auto_fallback_to_full_download;
+	get_request.expected_bytes = buffer_out_len;
 	return context.Finalize(send_request(get_request), get_request);
 }
 

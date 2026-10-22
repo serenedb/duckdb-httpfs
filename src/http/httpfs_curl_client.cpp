@@ -474,8 +474,12 @@ public:
 			curl->SetOption(CURLOPT_URL, nullptr);
 			curl->SetOption(CURLOPT_CURLU, url.Get());
 			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
+			curl->SetOption(
+			    CURLOPT_TIMEOUT_MS,
+			    info.expected_bytes == 0 ? 0L : NumericCast<long>(info.params.BodyDeadlineMs(info.expected_bytes)));
 			GetTransferState transfer(*this, info);
 			res = curl->Execute();
+			curl->SetOption(CURLOPT_TIMEOUT_MS, 0L);
 			return transfer.Finish(res);
 		}
 	}
