@@ -211,14 +211,6 @@ BufferManager &S3FileSystem::GetBufferManager() {
 	return buffer_manager;
 }
 
-ProducerToken &S3FileSystem::UploadProducer() {
-	annotated_lock_guard<annotated_mutex> guard(upload_producer_lock);
-	if (!upload_producer) {
-		upload_producer = TaskScheduler::GetScheduler(buffer_manager.GetDatabase()).CreateProducer();
-	}
-	return *upload_producer;
-}
-
 unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, FileOpenFlags flags,
                                                       optional_ptr<FileOpener> opener) {
 	FileOpenerInfo info = {file.path};
