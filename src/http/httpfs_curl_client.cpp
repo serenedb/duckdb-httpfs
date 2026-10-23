@@ -42,7 +42,7 @@ static string SelectCURLCertPath() {
 	return string();
 }
 
-static size_t RequestHeaderCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+static size_t RequestHeaderCallback(char *contents, size_t size, size_t nmemb, void *userp) {
 	auto total_size = size * nmemb;
 	string header(char_ptr_cast(contents), total_size);
 	auto &header_collection = *static_cast<vector<HTTPHeaders> *>(userp);
@@ -323,7 +323,7 @@ private:
 		}
 
 	private:
-		static size_t HeaderCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+		static size_t HeaderCallback(char *contents, size_t size, size_t nmemb, void *userp) {
 			auto &state = *static_cast<GetTransferState *>(userp);
 			const auto total_size = RequestHeaderCallback(
 			    contents, size, nmemb, static_cast<void *>(&state.client.request_info->header_collection));
@@ -341,7 +341,7 @@ private:
 			return total_size;
 		}
 
-		static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+		static size_t WriteCallback(char *contents, size_t size, size_t nmemb, void *userp) {
 			auto &state = *static_cast<GetTransferState *>(userp);
 			const auto total_size = size * nmemb;
 			try {
@@ -771,7 +771,7 @@ private:
 		return response;
 	}
 
-	static size_t BodyWriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+	static size_t BodyWriteCallback(char *contents, size_t size, size_t nmemb, void *userp) {
 		auto total_size = size * nmemb;
 		static_cast<HTTPFSCurlClient *>(userp)->AppendBody(char_ptr_cast(contents), total_size);
 		return total_size;
