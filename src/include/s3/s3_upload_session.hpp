@@ -133,6 +133,11 @@ private:
 	void LatchFailureLocked(shared_ptr<const ErrorData> error, FailureDisposition disposition)
 	    DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] void FailOperation(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
+	//! Claims the cleanup of a failure once no operation or part is in flight: the multipart upload to abort, or null
+	//! when another caller owns the cleanup, it has to wait, or there is nothing to abort
+	shared_ptr<const string> ClaimCleanup() DUCKDB_REQUIRES(state_lock);
+	//! Aborts the multipart upload a cleanup claimed and completes the cleanup
+	void RunCleanup(const string &upload_id) noexcept DUCKDB_EXCLUDES(state_lock);
 	FailureSnapshot CaptureFailure() const DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] static void ThrowFailure(const FailureSnapshot &failure);
 	void ThrowIfFailed() DUCKDB_EXCLUDES(state_lock);
