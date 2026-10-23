@@ -347,6 +347,10 @@ void S3UploadSession::ReservePart(PreparedWrite &write, unique_ptr<BufferedPart>
 
 S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location)
     DUCKDB_EXCLUDES(state_lock) {
+	absl::crc32c_t write_checksum {0};
+	if (config.checksum) {
+		write_checksum = absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(data), size));
+	}
 	FailureSnapshot failure;
 	PreparedWrite result;
 	{
@@ -363,7 +367,7 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 			throw IOException("S3 upload exceeds the configured maximum file size of %llu bytes", config.max_file_size);
 		} else {
 			if (config.checksum) {
-				checksum = absl::ExtendCrc32c(checksum, absl::string_view(const_char_ptr_cast(data), size));
+				checksum = absl::ConcatCrc32c(checksum, write_checksum, size);
 			}
 			result.buffered_part = std::move(buffered_part);
 			idx_t input_offset = 0;
