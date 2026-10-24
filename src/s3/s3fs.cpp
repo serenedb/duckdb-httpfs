@@ -126,8 +126,10 @@ void S3FileHandle::Close() {
 void S3FileHandle::FinalizeUpload() {
 	auto upload_claim = ClaimUpload(false);
 	if (upload_claim) {
-		upload_claim.Get().Finalize();
-		etag = upload_claim.Get().UploadedETag();
+		auto uploaded_etag = upload_claim.Get().Finalize();
+		if (!uploaded_etag.empty()) {
+			etag = std::move(uploaded_etag);
+		}
 	}
 }
 
