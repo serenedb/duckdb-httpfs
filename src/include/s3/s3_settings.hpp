@@ -13,7 +13,7 @@ class FileOpener;
 struct S3UploadConfig {
 public:
 	static S3UploadConfig Create(uint64_t max_file_size, uint64_t max_parts, const S3MultipartUploadPolicy &policy);
-	static S3UploadConfig ReadFrom(optional_ptr<FileOpener> opener, const S3MultipartUploadPolicy &policy);
+	static S3UploadConfig ReadFrom(optional_ptr<FileOpener> opener, const S3Provider &provider);
 
 	idx_t TargetPartSize(idx_t reserved_parts) const;
 	idx_t DirectPartSize(idx_t reserved_parts, idx_t remaining) const;
@@ -34,7 +34,7 @@ public:
 	idx_t growth_interval = 0;
 	idx_t maximum_part_size = 0;
 	S3MultipartPartSizeStrategy part_size_strategy = S3MultipartPartSizeStrategy::ADAPTIVE;
-	bool checksum = false;
+	bool checksum = true;
 };
 
 struct S3Settings {

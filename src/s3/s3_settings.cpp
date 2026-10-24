@@ -141,7 +141,7 @@ S3UploadConfig S3UploadConfig::Create(uint64_t max_file_size, uint64_t max_parts
 	return result;
 }
 
-S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S3MultipartUploadPolicy &policy) {
+S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S3Provider &provider) {
 	uint64_t uploader_max_filesize;
 	uint64_t max_parts_per_file;
 	Value value;
@@ -156,11 +156,14 @@ S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S
 	} else {
 		max_parts_per_file = S3UploadConfig::DEFAULT_MAX_PARTS_PER_FILE;
 	}
-	auto result = Create(uploader_max_filesize, max_parts_per_file, policy);
+	auto result = Create(uploader_max_filesize, max_parts_per_file, provider.GetMultipartUploadPolicy());
 	if (FileOpener::TryGetCurrentSetting(opener, "s3_uploader_parts_in_flight", value)) {
 		result.parts_in_flight = value.GetValue<uint64_t>();
 	}
-	result.checksum = !FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value) || value.GetValue<bool>();
+	if (FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value)) {
+		result.checksum = value.GetValue<bool>();
+	}
+	result.checksum = result.checksum && provider.SupportsFullObjectChecksum();
 	return result;
 }
 
