@@ -159,8 +159,6 @@ S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S
 	auto result = Create(uploader_max_filesize, max_parts_per_file, policy);
 	if (FileOpener::TryGetCurrentSetting(opener, "s3_uploader_parts_in_flight", value)) {
 		result.parts_in_flight = value.GetValue<uint64_t>();
-	} else {
-		result.parts_in_flight = S3UploadConfig::DEFAULT_PARTS_IN_FLIGHT;
 	}
 	result.checksum = !FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value) || value.GetValue<bool>();
 	return result;
