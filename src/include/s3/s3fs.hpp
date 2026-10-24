@@ -141,7 +141,7 @@ protected:
 	void ValidateResponseVersion(HTTPFileHandle &handle, const HTTPReadConfig &read_config,
 	                             const HTTPResponse &response) override;
 	bool ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-	                       optional_ptr<FileOpener> opener) override;
+	                       optional_ptr<FileOpener> opener, const ListFilesOptions &options) override;
 	bool SupportsListFilesExtended() const override;
 	unique_ptr<MultiFileList> GlobFilesExtended(const string &path, const FileGlobInput &input,
 	                                            optional_ptr<FileOpener> opener) override;
