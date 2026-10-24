@@ -82,8 +82,8 @@ public:
 	S3RequestSnapshot(const HTTPFSParams &http_params, const S3AuthParams &auth_params_p, string refresh_path_p,
 	                  weak_ptr<ClientContext> client_context_p = {}, bool credential_refresh_enabled_p = true,
 	                  bool region_redirected_p = false, idx_t credential_generation_p = 0,
-	                  optional<S3MultipartUploadPolicy> multipart_upload_policy_p = {},
-	                  weak_ptr<DatabaseInstance> database_p = {});
+	                  optional<S3MultipartUploadPolicy> multipart_upload_policy_p = {});
+	S3RequestSnapshot(const HTTPFSParams &http_params, const S3RequestSnapshot &other);
 
 public:
 	static constexpr HTTPRequestSnapshotType TYPE = HTTPRequestSnapshotType::S3;

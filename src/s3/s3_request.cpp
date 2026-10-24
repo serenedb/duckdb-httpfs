@@ -757,10 +757,9 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 		}
 		auto merged_http_params = latest.Params();
 		refreshed_http_material.Apply(merged_http_params);
-		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    merged_http_params, merged_auth_params, latest.refresh_path, latest.client_context,
-		    latest.credential_refresh_enabled, latest.region_redirected, latest.credential_generation + 1,
-		    latest.multipart_upload_policy, latest.database);
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(merged_http_params, latest);
+		replacement->auth_params = std::move(merged_auth_params);
+		replacement->credential_generation++;
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -777,13 +776,10 @@ bool S3RequestExecutor::SetSessionRegion(HTTPRequestSession &session, const stri
 			return false;
 		}
 
-		auto auth_params = snapshot.auth_params;
-		previous_region = auth_params.GetCredentials().region;
-		auth_params = auth_params.WithRegion(correct_region);
-		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    snapshot.Params(), auth_params, snapshot.refresh_path, snapshot.client_context,
-		    snapshot.credential_refresh_enabled, true, snapshot.credential_generation, snapshot.multipart_upload_policy,
-		    snapshot.database);
+		previous_region = snapshot.auth_params.GetCredentials().region;
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot);
+		replacement->auth_params = snapshot.auth_params.WithRegion(correct_region);
+		replacement->region_redirected = true;
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -872,12 +868,18 @@ S3RequestSnapshot::S3RequestSnapshot(const HTTPFSParams &http_params, const S3Au
                                      string refresh_path_p, weak_ptr<ClientContext> client_context_p,
                                      bool credential_refresh_enabled_p, bool region_redirected_p,
                                      idx_t credential_generation_p,
-                                     optional<S3MultipartUploadPolicy> multipart_upload_policy_p,
-                                     weak_ptr<DatabaseInstance> database_p)
+                                     optional<S3MultipartUploadPolicy> multipart_upload_policy_p)
     : HTTPRequestSnapshot(http_params, TYPE), auth_params(auth_params_p), refresh_path(std::move(refresh_path_p)),
-      client_context(std::move(client_context_p)), database(std::move(database_p)),
-      credential_refresh_enabled(credential_refresh_enabled_p), region_redirected(region_redirected_p),
-      credential_generation(credential_generation_p), multipart_upload_policy(std::move(multipart_upload_policy_p)) {
+      client_context(std::move(client_context_p)), credential_refresh_enabled(credential_refresh_enabled_p),
+      region_redirected(region_redirected_p), credential_generation(credential_generation_p),
+      multipart_upload_policy(std::move(multipart_upload_policy_p)) {
+}
+
+S3RequestSnapshot::S3RequestSnapshot(const HTTPFSParams &http_params, const S3RequestSnapshot &other)
+    : HTTPRequestSnapshot(http_params, TYPE), auth_params(other.auth_params), refresh_path(other.refresh_path),
+      client_context(other.client_context), database(other.database),
+      credential_refresh_enabled(other.credential_refresh_enabled), region_redirected(other.region_redirected),
+      credential_generation(other.credential_generation), multipart_upload_policy(other.multipart_upload_policy) {
 }
 
 string S3RequestUtil::GetPayloadHash(EncryptionUtil &encryption_util, const_data_ptr_t buffer, idx_t buffer_len) {
