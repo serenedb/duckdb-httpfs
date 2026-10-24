@@ -70,7 +70,7 @@ public:
 	}
 
 	~PartUploadTask() override {
-		if (!counted || ran) {
+		if (ran) {
 			return;
 		}
 		try {
@@ -91,9 +91,6 @@ public:
 	string TaskType() const override {
 		return "S3PartUploadTask";
 	}
-
-	//! Set once the part is counted in flight
-	bool counted = false;
 
 private:
 	S3UploadSession &session;
@@ -842,7 +839,6 @@ bool S3UploadSession::UploadsInBackground() const {
 
 void S3UploadSession::ScheduleUpload(PreparedPart part) {
 	EnsureMultipartUpload();
-	auto task = make_shared_ptr<PartUploadTask>(*this, std::move(part));
 	FailureSnapshot failure;
 	{
 		annotated_unique_lock<annotated_mutex> guard(state_lock);
@@ -857,12 +853,12 @@ void S3UploadSession::ScheduleUpload(PreparedPart part) {
 			failure = CaptureFailure();
 		} else {
 			parts_in_flight++;
-			task->counted = true;
 		}
 	}
 	if (failure.primary_error) {
 		ThrowFailure(failure);
 	}
+	auto task = make_shared_ptr<PartUploadTask>(*this, std::move(part));
 	auto &db = s3fs.get().GetBufferManager().GetDatabase();
 	TaskScheduler::GetScheduler(db).ScheduleTask(UploadProducer(db), std::move(task), TaskSchedulerType::ASYNC);
 }
