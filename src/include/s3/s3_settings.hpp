@@ -29,7 +29,7 @@ public:
 	uint64_t max_file_size = 0;
 	idx_t max_parts = 0;
 	//! Parts of one upload sent at the same time; with 1 every part is sent by the write that fills it
-	idx_t parts_in_flight = 1;
+	idx_t parts_in_flight = DEFAULT_PARTS_IN_FLIGHT;
 	idx_t initial_part_size = 0;
 	idx_t growth_interval = 0;
 	idx_t maximum_part_size = 0;
