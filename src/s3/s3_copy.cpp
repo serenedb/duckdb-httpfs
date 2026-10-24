@@ -2,14 +2,15 @@
 
 #include "s3/s3_request.hpp"
 #include "s3/s3_url.hpp"
+#include "s3/s3_xml_response.hpp"
 
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
 void S3FileSystem::MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) {
-	const auto source_size = OpenFile(source, FileFlags::FILE_FLAGS_READ, opener)->GetFileSize();
 	if (source == target) {
+		OpenFile(source, FileFlags::FILE_FLAGS_READ, opener);
 		return;
 	}
 
@@ -33,10 +34,17 @@ void S3FileSystem::MoveFile(const string &source, const string &target, optional
 		throw S3RequestUtil::GetRequestError(request_result.context, *response);
 	}
 	EraseGlobalCacheEntry(target);
-	auto copied = OpenFile(target, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
-	if (!copied || copied->GetFileSize() != source_size) {
-		throw IOException("S3 copy of \"%s\" to \"%s\" did not produce the object; the source is kept", source,
-		                  request_result.context.display_url);
+	S3XMLResponse copy_result;
+	if (!S3XMLResponseParser::TryParse(response->body, copy_result)) {
+		throw IOException("S3 copy of \"%s\" to \"%s\" returned malformed XML, so it is not known to have completed; "
+		                  "the source is kept",
+		                  source, request_result.context.display_url);
+	}
+	if (copy_result.type == S3XMLResponseType::ERROR) {
+		throw HTTPException(*response, "S3 copy of \"%s\" to \"%s\" failed: %s%s%s; the source is kept", source,
+		                    request_result.context.display_url,
+		                    copy_result.error_code.empty() ? "S3 returned an embedded error" : copy_result.error_code,
+		                    copy_result.error_message.empty() ? "" : ": ", copy_result.error_message);
 	}
 	RemoveFile(source, opener);
 }
