@@ -5,6 +5,7 @@
 #include "s3/s3_xml_response.hpp"
 #include "s3/s3fs.hpp"
 
+#include "duckdb/common/bswap.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -57,10 +58,8 @@ static bool IsSuccessfulStatus(HTTPStatusCode status) {
 }
 
 static string EncodeChecksum(absl::crc32c_t checksum) {
-	const auto value = static_cast<uint32_t>(checksum);
-	const char bytes[] = {static_cast<char>(value >> 24), static_cast<char>(value >> 16), static_cast<char>(value >> 8),
-	                      static_cast<char>(value)};
-	return Blob::ToBase64(string_t(bytes, sizeof(bytes)));
+	const auto value = BSwapIfLE(static_cast<uint32_t>(checksum));
+	return Blob::ToBase64(string_t(const_char_ptr_cast(&value), sizeof(value)));
 }
 
 } // namespace
