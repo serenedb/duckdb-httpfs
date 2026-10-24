@@ -1,6 +1,7 @@
 #pragma once
 
 #include "s3/s3_settings.hpp"
+#include "s3/s3_xml_response.hpp"
 
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/helper.hpp"
@@ -74,8 +75,7 @@ private:
 	//! Multipart completion state.
 	struct MultipartSnapshot {
 		shared_ptr<const string> upload_id;
-		vector<string> etags;
-		vector<absl::crc32c_t> part_checksums;
+		vector<S3CompletedPart> parts;
 		absl::crc32c_t checksum {0};
 	};
 
@@ -153,7 +153,7 @@ private:
 	shared_ptr<const string> EnsureMultipartUpload();
 	void PublishInitializationFailure(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
 	string InitializeMultipartUpload();
-	void StorePartETag(idx_t part_number, string etag, absl::crc32c_t checksum) DUCKDB_EXCLUDES(state_lock);
+	void StorePart(idx_t part_number, S3CompletedPart part) DUCKDB_EXCLUDES(state_lock);
 	MultipartSnapshot GetMultipartSnapshot() DUCKDB_EXCLUDES(state_lock);
 	void CompleteMultipartUpload();
 	absl::crc32c_t Checksum() const DUCKDB_EXCLUDES(state_lock);
@@ -196,8 +196,7 @@ private:
 	unique_ptr<BufferedPart> buffered_part DUCKDB_GUARDED_BY(state_lock);
 	InitializationState initialization_state DUCKDB_GUARDED_BY(state_lock) = InitializationState::NOT_STARTED;
 	shared_ptr<const string> multipart_upload_id DUCKDB_GUARDED_BY(state_lock);
-	vector<string> part_etags DUCKDB_GUARDED_BY(state_lock);
-	vector<absl::crc32c_t> part_checksums DUCKDB_GUARDED_BY(state_lock);
+	vector<S3CompletedPart> upload_parts DUCKDB_GUARDED_BY(state_lock);
 	absl::crc32c_t checksum DUCKDB_GUARDED_BY(state_lock) {0};
 	string uploaded_etag DUCKDB_GUARDED_BY(state_lock);
 
