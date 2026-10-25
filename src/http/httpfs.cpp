@@ -564,8 +564,11 @@ FileMetadata HTTPFileSystem::Stats(FileHandle &handle) {
 FileExistence HTTPFileSystem::TryFileExists(const string &filename, optional_ptr<FileOpener> opener,
                                             optional_ptr<ErrorData> error) {
 	try {
-		auto handle = OpenFile(filename, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
-		return handle ? FileExistence::EXISTS : FileExistence::MISSING;
+		OpenFileInfo file(filename);
+		auto handle = CreateHandle(file, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
+		handle->metadata_only = true;
+		handle->Initialize(file, opener);
+		return handle->file_not_found ? FileExistence::MISSING : FileExistence::EXISTS;
 	} catch (std::exception &ex) {
 		return ClassifyExistenceFailure(ex, error);
 	}
@@ -1161,7 +1164,7 @@ bool HTTPFileHandle::TryInitializeRead(HTTPFileSystem &hfs, optional_ptr<HTTPMet
 		return false;
 	}
 	auto request_snapshot = request_session->Capture().snapshot;
-	if (request_snapshot->Params().force_download) {
+	if (request_snapshot->Params().force_download && !metadata_only) {
 		FinalizeReadConfig();
 		auto cached_file = hfs.FullDownload(*this, GetReadConfig(), should_write_cache);
 		if (cached_file) {
@@ -1190,7 +1193,7 @@ void HTTPFileHandle::InitializeFileInfo(HTTPFileSystem &hfs, optional_ptr<HTTPMe
 	}
 	FinalizeReadConfig();
 
-	if (flags.OpenForReading()) {
+	if (flags.OpenForReading() && !metadata_only) {
 		auto request_snapshot = request_session->Capture().snapshot;
 		const auto has_cache_state = (request_snapshot->Params().state != nullptr) && (length == 0);
 		const auto always_download = force_full_download;
