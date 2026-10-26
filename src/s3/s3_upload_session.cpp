@@ -561,7 +561,7 @@ S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, 
 	return result;
 }
 
-string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
+void S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
 	HTTPHeaders headers;
 	if (config.checksum) {
 		headers["x-amz-checksum-crc32c"] = EncodeChecksum(Checksum());
@@ -572,10 +572,6 @@ string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
 	if (response->status != HTTPStatusCode::OK_200 && response->status != HTTPStatusCode::Created_201) {
 		throw GetStatusError(*response, request_result.context);
 	}
-	if (!response->headers.HasHeader("ETag")) {
-		return {};
-	}
-	return response->headers.GetHeaderValue("ETag");
 }
 
 void S3UploadSession::UploadPart(PreparedPart &part) {
@@ -640,7 +636,7 @@ absl::crc32c_t S3UploadSession::Checksum() const DUCKDB_EXCLUDES(state_lock) {
 	return checksum;
 }
 
-string S3UploadSession::CompleteMultipartUpload() {
+void S3UploadSession::CompleteMultipartUpload() {
 	auto snapshot = GetMultipartSnapshot();
 	D_ASSERT(snapshot.upload_id);
 	HTTPHeaders headers;
@@ -686,7 +682,6 @@ string S3UploadSession::CompleteMultipartUpload() {
 		                                                    "aborted",
 		                                                    request_context.display_url));
 	}
-	return std::move(parsed_response.etag);
 }
 
 string S3UploadSession::GetDisplayPath() const {
@@ -720,11 +715,11 @@ S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t 
 	}
 }
 
-string S3UploadSession::Finalize() {
+void S3UploadSession::Finalize() {
 	bool already_finalized;
 	auto local_buffered_part = BeginFinalize(already_finalized);
 	if (already_finalized) {
-		return {};
+		return;
 	}
 
 	try {
@@ -733,12 +728,11 @@ string S3UploadSession::Finalize() {
 			annotated_lock_guard<annotated_mutex> guard(state_lock);
 			multipart_upload = !upload_parts.empty();
 		}
-		string etag;
 		if (!multipart_upload) {
 			if (!local_buffered_part) {
-				etag = UploadObject(nullptr, 0);
+				UploadObject(nullptr, 0);
 			} else {
-				etag = UploadObject(local_buffered_part->Ptr(), local_buffered_part->size);
+				UploadObject(local_buffered_part->Ptr(), local_buffered_part->size);
 			}
 		} else {
 			if (local_buffered_part) {
@@ -752,10 +746,9 @@ string S3UploadSession::Finalize() {
 			}
 			AwaitBackgroundUploads();
 			ThrowIfFailed();
-			etag = CompleteMultipartUpload();
+			CompleteMultipartUpload();
 		}
 		FinishFinalize();
-		return etag;
 	} catch (S3AmbiguousUploadException &ex) {
 		FailOperation(ErrorData(ex), FailureDisposition::AMBIGUOUS);
 	} catch (std::exception &ex) {
