@@ -115,7 +115,7 @@ public:
 
 	//! Upload operations.
 	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location);
-	void Finalize();
+	string Finalize();
 	bool Abort();
 
 private:
@@ -154,13 +154,13 @@ private:
 	string InitializeMultipartUpload();
 	void StorePart(idx_t part_number, S3CompletedPart part) DUCKDB_EXCLUDES(state_lock);
 	MultipartSnapshot GetMultipartSnapshot() DUCKDB_EXCLUDES(state_lock);
-	void CompleteMultipartUpload();
+	string CompleteMultipartUpload();
 	absl::crc32c_t Checksum() const DUCKDB_EXCLUDES(state_lock);
 
 	//! S3 upload and cleanup requests.
 	S3RequestResult RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
 	                                 const S3RequestQuery &query, HTTPHeaders headers);
-	void UploadObject(const_data_ptr_t data, idx_t size);
+	string UploadObject(const_data_ptr_t data, idx_t size);
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
 
