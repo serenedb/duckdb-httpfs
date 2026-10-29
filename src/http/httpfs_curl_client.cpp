@@ -670,9 +670,10 @@ public:
 		}
 
 		request_info->response_code = curl->GetResponseCode();
-		info.buffer_out = request_info->body;
-
-		return TransformBufferedResponseCurl(res);
+		auto response = TransformBufferedResponseCurl(res);
+		// a POST hands its body back through buffer_out
+		info.buffer_out = std::move(response->body);
+		return response;
 	}
 
 	void Cleanup() override {
