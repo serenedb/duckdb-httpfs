@@ -121,7 +121,7 @@ public:
 	                                         const HTTPReadConfig &read_config, idx_t file_offset,
 	                                         data_ptr_t buffer_out, idx_t buffer_out_len) override;
 	S3RequestResult PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
-	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
+	                            const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                            const S3RequestQuery &query = S3RequestQuery());
 	S3RequestResult PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                           const_data_ptr_t buffer_in, idx_t buffer_in_len,
@@ -151,7 +151,7 @@ protected:
 
 private:
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
-	                                       const string &body, idx_t key_count, string &result);
+	                                       const string &body, idx_t key_count);
 
 	//! Database-owned buffer manager.
 	BufferManager &buffer_manager;

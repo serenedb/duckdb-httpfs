@@ -223,9 +223,8 @@ protected:
 	static unique_ptr<HTTPResponse> RunDeleteRequest(const string &url, const HTTPHeaders &header_map,
 	                                                 HTTPFSParams &http_params, const HTTPSendCallback &send_request);
 	static unique_ptr<HTTPResponse> RunPostRequest(const string &url, const HTTPHeaders &header_map,
-	                                               HTTPFSParams &http_params, string &result,
-	                                               const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                                               const HTTPSendCallback &send_request);
+	                                               HTTPFSParams &http_params, const_data_ptr_t buffer_in,
+	                                               idx_t buffer_in_len, const HTTPSendCallback &send_request);
 	static unique_ptr<HTTPResponse> RunPutRequest(const string &url, const HTTPHeaders &header_map,
 	                                              HTTPFSParams &http_params, const_data_ptr_t buffer_in,
 	                                              idx_t buffer_in_len, const string &content_type,

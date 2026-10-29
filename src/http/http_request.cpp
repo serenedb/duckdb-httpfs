@@ -52,13 +52,10 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunDeleteRequest(const string &url, con
 }
 
 unique_ptr<HTTPResponse> HTTPFileSystem::RunPostRequest(const string &url, const HTTPHeaders &header_map,
-                                                        HTTPFSParams &http_params, string &buffer_out,
-                                                        const_data_ptr_t buffer_in, idx_t buffer_in_len,
-                                                        const HTTPSendCallback &send_request) {
+                                                        HTTPFSParams &http_params, const_data_ptr_t buffer_in,
+                                                        idx_t buffer_in_len, const HTTPSendCallback &send_request) {
 	PostRequestInfo post_request(url, header_map, http_params, buffer_in, buffer_in_len);
-	auto result = send_request(post_request);
-	buffer_out = std::move(post_request.buffer_out);
-	return result;
+	return send_request(post_request);
 }
 
 unique_ptr<HTTPResponse> HTTPFileSystem::RunPutRequest(const string &url, const HTTPHeaders &header_map,
