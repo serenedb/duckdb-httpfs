@@ -664,8 +664,6 @@ public:
 		}
 
 		request_info->response_code = curl->GetResponseCode();
-		info.buffer_out = request_info->body;
-
 		return TransformBufferedResponseCurl(res);
 	}
 
