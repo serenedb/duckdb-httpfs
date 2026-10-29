@@ -125,7 +125,7 @@ public:
 	                                         const HTTPReadConfig &read_config, idx_t file_offset,
 	                                         std::span<const FileReadTarget> targets) override;
 	S3RequestResult PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
-	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
+	                            const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                            const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                           std::span<const HTTPBodyPiece> body, const S3RequestQuery &query = S3RequestQuery(),
@@ -158,7 +158,7 @@ private:
 	bool ListDirectory(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
 	                   optional_ptr<FileOpener> opener, const ListFilesOptions &options, bool markers);
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
-	                                       const string &body, idx_t key_count, string &result);
+	                                       const string &body, idx_t key_count);
 	void WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t size, idx_t location, uint32_t crc32c,
 	             unique_ptr<FileWriteHold> hold);
 
