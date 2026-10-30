@@ -1,12 +1,16 @@
 #pragma once
 
 #include "s3/s3_settings.hpp"
+#include "s3/s3_xml_response.hpp"
 
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/main/http/http_util.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
+
+#include <absl/crc/crc32c.h>
 
 namespace duckdb {
 
@@ -71,8 +75,12 @@ private:
 	//! Multipart completion state.
 	struct MultipartSnapshot {
 		shared_ptr<const string> upload_id;
-		vector<string> etags;
+		vector<S3CompletedPart> parts;
+		absl::crc32c_t checksum {0};
 	};
+
+	//! Sends one part on the async threads.
+	class PartUploadTask;
 
 public:
 	//! Owns one admitted write until it finishes or fails.
@@ -107,7 +115,7 @@ public:
 
 	//! Upload operations.
 	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location);
-	void Finalize();
+	string Finalize();
 	bool Abort();
 
 private:
@@ -124,6 +132,11 @@ private:
 	void LatchFailureLocked(shared_ptr<const ErrorData> error, FailureDisposition disposition)
 	    DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] void FailOperation(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
+	//! Claims the cleanup of a failure once no operation or part is in flight: the multipart upload to abort, or null
+	//! when another caller owns the cleanup, it has to wait, or there is nothing to abort
+	shared_ptr<const string> ClaimCleanup() DUCKDB_REQUIRES(state_lock);
+	//! Aborts the multipart upload a cleanup claimed and completes the cleanup
+	void RunCleanup(const string &upload_id) noexcept DUCKDB_EXCLUDES(state_lock);
 	FailureSnapshot CaptureFailure() const DUCKDB_REQUIRES(state_lock);
 	[[noreturn]] static void ThrowFailure(const FailureSnapshot &failure);
 	void ThrowIfFailed() DUCKDB_EXCLUDES(state_lock);
@@ -139,16 +152,24 @@ private:
 	shared_ptr<const string> EnsureMultipartUpload();
 	void PublishInitializationFailure(ErrorData error, FailureDisposition disposition) DUCKDB_EXCLUDES(state_lock);
 	string InitializeMultipartUpload();
-	void StorePartETag(idx_t part_number, string etag) DUCKDB_EXCLUDES(state_lock);
+	void StorePart(idx_t part_number, S3CompletedPart part) DUCKDB_EXCLUDES(state_lock);
 	MultipartSnapshot GetMultipartSnapshot() DUCKDB_EXCLUDES(state_lock);
-	void CompleteMultipartUpload();
+	string CompleteMultipartUpload();
+	absl::crc32c_t Checksum() const DUCKDB_EXCLUDES(state_lock);
 
 	//! S3 upload and cleanup requests.
 	S3RequestResult RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
-	                                 const S3RequestQuery &query);
-	void UploadObject(const_data_ptr_t data, idx_t size);
+	                                 const S3RequestQuery &query, HTTPHeaders headers);
+	string UploadObject(const_data_ptr_t data, idx_t size);
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
+
+	//! Parts sent on the async threads while the writer goes on.
+	bool UploadsInBackground() const;
+	void ScheduleUpload(PreparedPart part);
+	void UploadInBackground(PreparedPart &part) noexcept;
+	void FinishBackgroundUpload() noexcept DUCKDB_EXCLUDES(state_lock);
+	void AwaitBackgroundUploads() noexcept DUCKDB_EXCLUDES(state_lock);
 
 	//! Request diagnostics.
 	string GetDisplayPath() const;
@@ -162,16 +183,19 @@ private:
 	const S3UploadConfig config;
 
 	//! Operation and lifecycle synchronization.
-	annotated_mutex state_lock;
+	mutable annotated_mutex state_lock;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
+	//! Parts being sent on the async threads; the last one to finish after a failure cleans up
+	idx_t parts_in_flight DUCKDB_GUARDED_BY(state_lock) = 0;
 
 	//! Buffered and multipart upload state.
 	idx_t next_offset DUCKDB_GUARDED_BY(state_lock) = 0;
 	unique_ptr<BufferedPart> buffered_part DUCKDB_GUARDED_BY(state_lock);
 	InitializationState initialization_state DUCKDB_GUARDED_BY(state_lock) = InitializationState::NOT_STARTED;
 	shared_ptr<const string> multipart_upload_id DUCKDB_GUARDED_BY(state_lock);
-	vector<string> part_etags DUCKDB_GUARDED_BY(state_lock);
+	vector<S3CompletedPart> upload_parts DUCKDB_GUARDED_BY(state_lock);
+	absl::crc32c_t checksum DUCKDB_GUARDED_BY(state_lock) {0};
 
 	//! Latched failure and cleanup state.
 	FailureSnapshot primary_failure DUCKDB_GUARDED_BY(state_lock);

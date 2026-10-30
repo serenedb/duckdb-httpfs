@@ -38,9 +38,9 @@ else()
   target_link_libraries(httpfs_extension CURL::libcurl)
 
   target_link_libraries(httpfs_loadable_extension duckdb_mbedtls OpenSSL::SSL
-                        OpenSSL::Crypto)
+                        OpenSSL::Crypto absl::crc32c)
   target_link_libraries(httpfs_extension duckdb_mbedtls OpenSSL::SSL
-                        OpenSSL::Crypto)
+                        OpenSSL::Crypto absl::crc32c)
 
   if(APPLE)
     find_library(COREFOUNDATION_FRAMEWORK CoreFoundation)

@@ -1,5 +1,6 @@
 #include "http/httpfs_client.hpp"
 #include "http/http_state.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/thread_annotation/thread_annotation.hpp"
 #include "duckdb/logging/logger.hpp"
 
@@ -234,7 +235,8 @@ private:
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
-			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT, params.timeout);
+			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT_MS, NumericCast<long>(MinValue<uint64_t>(
+			                                                      params.connect_timeout_ms, params.timeout * 1000)));
 			client.curl->SetOption(CURLOPT_TIMEOUT, 0L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_LIMIT, 1024L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
@@ -474,10 +476,34 @@ public:
 			curl->SetOption(CURLOPT_URL, nullptr);
 			curl->SetOption(CURLOPT_CURLU, url.Get());
 			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
+			curl->SetOption(CURLOPT_TIMEOUT_MS, RangeDeadlineMs(info.headers, info.params.Cast<HTTPFSParams>()));
 			GetTransferState transfer(*this, info);
 			res = curl->Execute();
+			curl->SetOption(CURLOPT_TIMEOUT_MS, 0L);
 			return transfer.Finish(res);
 		}
+	}
+
+	static long RangeDeadlineMs(const HTTPHeaders &headers, const HTTPFSParams &params) {
+		static constexpr uint64_t MIN_BYTES_PER_SECOND = 1ULL << 20;
+		if (!headers.HasHeader("Range")) {
+			return 0;
+		}
+		const auto range = headers.GetHeaderValue("Range");
+		const auto equals = range.find('=');
+		const auto dash = equals == string::npos ? string::npos : range.find('-', equals);
+		uint64_t first = 0;
+		uint64_t last = 0;
+		if (dash == string::npos ||
+		    !TryCast::Operation(string_t(range.data() + equals + 1, UnsafeNumericCast<uint32_t>(dash - equals - 1)),
+		                        first) ||
+		    !TryCast::Operation(string_t(range.data() + dash + 1, UnsafeNumericCast<uint32_t>(range.size() - dash - 1)),
+		                        last) ||
+		    last < first) {
+			return 0;
+		}
+		const auto seconds = params.timeout + (last - first + 1) / MIN_BYTES_PER_SECOND;
+		return NumericCast<long>(seconds * 1000 + params.timeout_usec / 1000);
 	}
 
 	unique_ptr<HTTPResponse> Put(PutRequestInfo &info) override {
@@ -739,6 +765,9 @@ private:
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
 			response->request_error = curl_easy_strerror(res);
+			curl_off_t pretransfer = 0;
+			response->unsent =
+			    curl_easy_getinfo(*curl, CURLINFO_PRETRANSFER_TIME_T, &pretransfer) == CURLE_OK && pretransfer == 0;
 			return response;
 		}
 		if (include_body) {

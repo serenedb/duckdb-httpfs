@@ -46,6 +46,11 @@ struct S3DeleteObjectsResult {
 	vector<S3DeleteObjectsError> errors;
 };
 
+struct S3CompletedPart {
+	string etag;
+	string checksum_crc32c;
+};
+
 struct S3XMLResponseParser {
 	static bool TryParse(const string &input, S3XMLResponse &response);
 	static bool TryParseError(const string &input, S3XMLError &error);
@@ -56,7 +61,7 @@ struct S3XMLResponseParser {
 struct S3XMLWriter {
 	static string EscapeText(const string &text);
 	static string WriteDeleteObjectsRequest(const vector<string> &keys, idx_t begin, idx_t end);
-	static string WriteCompleteMultipartUploadRequest(const vector<string> &etags);
+	static string WriteCompleteMultipartUploadRequest(const vector<S3CompletedPart> &parts);
 };
 
 } // namespace duckdb

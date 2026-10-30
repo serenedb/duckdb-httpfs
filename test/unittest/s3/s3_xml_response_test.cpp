@@ -353,7 +353,7 @@ TEST_CASE("S3 XML writers escape server-controlled text", "[httpfs][s3][xml]") {
 	                     "<Object><Key>key&amp;&lt;&gt;&#13;'\"</Key></Object>"
 	                     "<Object><Key>plain</Key></Object><Quiet>true</Quiet></Delete>");
 
-	const auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest({special});
+	const auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest({S3CompletedPart {special, ""}});
 	CHECK(completion_body == "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
 	                         "<Part><ETag>key&amp;&lt;&gt;&#13;'\"</ETag><PartNumber>1</PartNumber></Part>"
 	                         "</CompleteMultipartUpload>");

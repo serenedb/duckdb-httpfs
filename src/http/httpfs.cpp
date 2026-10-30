@@ -85,6 +85,7 @@ private:
 
 	void ReadSettings() {
 		FileOpener::TryGetCurrentSetting(opener, "http_timeout", result->timeout, info);
+		FileOpener::TryGetCurrentSetting(opener, "http_connect_timeout_ms", result->connect_timeout_ms, info);
 		FileOpener::TryGetCurrentSetting(opener, "force_download", result->force_download, info);
 		FileOpener::TryGetCurrentSetting(opener, "force_download_threshold", result->force_download_threshold, info);
 		FileOpener::TryGetCurrentSetting(opener, "auto_fallback_to_full_download",
@@ -329,6 +330,9 @@ unique_ptr<FileHandle> HTTPFileSystem::OpenFileExtended(const OpenFileInfo &file
                                                         optional_ptr<FileOpener> opener) {
 	D_ASSERT(flags.Compression() == FileCompressionType::UNCOMPRESSED);
 
+	if (flags.ReturnNullIfExists() && FileExists(file.path, opener)) {
+		return nullptr;
+	}
 	auto handle = CreateHandle(file, flags, opener);
 
 	if (flags.OpenForWriting() && !flags.OpenForAppending() && !flags.OpenForReading()) {
@@ -564,8 +568,11 @@ FileMetadata HTTPFileSystem::Stats(FileHandle &handle) {
 FileExistence HTTPFileSystem::TryFileExists(const string &filename, optional_ptr<FileOpener> opener,
                                             optional_ptr<ErrorData> error) {
 	try {
-		auto handle = OpenFile(filename, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
-		return handle ? FileExistence::EXISTS : FileExistence::MISSING;
+		OpenFileInfo file(filename);
+		auto handle = CreateHandle(file, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS, opener);
+		handle->metadata_only = true;
+		handle->Initialize(file, opener);
+		return handle->file_not_found ? FileExistence::MISSING : FileExistence::EXISTS;
 	} catch (std::exception &ex) {
 		return ClassifyExistenceFailure(ex, error);
 	}
@@ -1161,7 +1168,7 @@ bool HTTPFileHandle::TryInitializeRead(HTTPFileSystem &hfs, optional_ptr<HTTPMet
 		return false;
 	}
 	auto request_snapshot = request_session->Capture().snapshot;
-	if (request_snapshot->Params().force_download) {
+	if (request_snapshot->Params().force_download && !metadata_only) {
 		FinalizeReadConfig();
 		auto cached_file = hfs.FullDownload(*this, GetReadConfig(), should_write_cache);
 		if (cached_file) {
@@ -1190,7 +1197,7 @@ void HTTPFileHandle::InitializeFileInfo(HTTPFileSystem &hfs, optional_ptr<HTTPMe
 	}
 	FinalizeReadConfig();
 
-	if (flags.OpenForReading()) {
+	if (flags.OpenForReading() && !metadata_only) {
 		auto request_snapshot = request_session->Capture().snapshot;
 		const auto has_cache_state = (request_snapshot->Params().state != nullptr) && (length == 0);
 		const auto always_download = force_full_download;

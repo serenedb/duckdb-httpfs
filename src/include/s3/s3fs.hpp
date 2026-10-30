@@ -103,7 +103,11 @@ public:
 	bool OnDiskFile(FileHandle &handle) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveFiles(const vector<string> &filenames, optional_ptr<FileOpener> opener = nullptr) override;
+	//! Copies the object server side in one request (at most 5 GiB), checks the copy, then deletes the source
+	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	void ListFilesRecursive(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
+	                        optional_ptr<FileOpener> opener = nullptr) override;
 	void FileSync(FileHandle &handle) override;
 	void AbortFileWrite(FileHandle &handle) override;
 	FileWriteMode GetWriteMode(FileHandle &) override;
@@ -122,10 +126,10 @@ public:
 	                                         data_ptr_t buffer_out, idx_t buffer_out_len) override;
 	S3RequestResult PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                            const S3RequestQuery &query = S3RequestQuery());
+	                            const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                           const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                           const S3RequestQuery &query = S3RequestQuery());
+	                           const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult DeleteRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                              const S3RequestQuery &query);
 	unique_ptr<HTTPResponse> DeleteRequest(FileHandle &handle, const string &s3_url, HTTPHeaders header_map) override;
