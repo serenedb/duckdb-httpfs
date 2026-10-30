@@ -35,6 +35,7 @@ public:
 	idx_t maximum_part_size = 0;
 	S3MultipartPartSizeStrategy part_size_strategy = S3MultipartPartSizeStrategy::ADAPTIVE;
 	bool checksum = true;
+	bool exclusive = false;
 };
 
 struct S3Settings {
