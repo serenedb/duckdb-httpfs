@@ -234,7 +234,8 @@ private:
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
-			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT, params.timeout);
+			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT_MS, NumericCast<long>(MinValue<uint64_t>(
+			                                                      params.connect_timeout_ms, params.timeout * 1000)));
 			client.curl->SetOption(CURLOPT_TIMEOUT, 0L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_LIMIT, 1024L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
@@ -743,6 +744,9 @@ private:
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
 			response->request_error = curl_easy_strerror(res);
+			long request_size = 0; // NOLINT(google-runtime-int): required by curl_easy_getinfo
+			response->unsent =
+			    curl_easy_getinfo(*curl, CURLINFO_REQUEST_SIZE, &request_size) == CURLE_OK && request_size == 0;
 			return response;
 		}
 		if (include_body) {
