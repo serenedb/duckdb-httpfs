@@ -147,6 +147,7 @@ private:
 		    {"Content-MD5", "Content-MD5"},
 		    {"Range", "Range"},
 		    {"If-Match", "If-Match"},
+		    {"If-None-Match", "If-None-Match"},
 		    {"x-amz-date", "x-amz-date"},
 		    {"x-amz-content-sha256", "x-amz-content-sha256"},
 		    {"x-amz-security-token", "x-amz-security-token"},

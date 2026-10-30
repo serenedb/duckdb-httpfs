@@ -62,6 +62,12 @@ static string EncodeChecksum(absl::crc32c_t checksum) {
 	return Blob::ToBase64(string_t(const_char_ptr_cast(&value), sizeof(value)));
 }
 
+static void VerifyCreated(const S3UploadConfig &config, const HTTPResponse &response, const string &display_url) {
+	if (config.exclusive && response.status == HTTPStatusCode::PreconditionFailed_412) {
+		throw IOException("Cannot create file \"%s\": File exists", display_url);
+	}
+}
+
 } // namespace
 
 class S3UploadSession::PartUploadTask : public Task {
@@ -566,9 +572,13 @@ string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
 	if (config.checksum) {
 		headers["x-amz-checksum-crc32c"] = EncodeChecksum(Checksum());
 	}
+	if (config.exclusive) {
+		headers["If-None-Match"] = "*";
+	}
 	auto request_result =
 	    RunUploadRequest(S3RequestOperation::PUT_OBJECT, data, size, S3RequestQuery(), std::move(headers));
 	auto &response = request_result.response;
+	VerifyCreated(config, *response, request_result.context.display_url);
 	if (response->status != HTTPStatusCode::OK_200 && response->status != HTTPStatusCode::Created_201) {
 		throw GetStatusError(*response, request_result.context);
 	}
@@ -648,6 +658,9 @@ string S3UploadSession::CompleteMultipartUpload() {
 		headers["x-amz-checksum-crc32c"] = EncodeChecksum(snapshot.checksum);
 		headers["x-amz-checksum-type"] = "FULL_OBJECT";
 	}
+	if (config.exclusive) {
+		headers["If-None-Match"] = "*";
+	}
 	auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest(snapshot.parts);
 
 	S3RequestQuery query {{"uploadId", *snapshot.upload_id}};
@@ -664,6 +677,7 @@ string S3UploadSession::CompleteMultipartUpload() {
 		                       "the request was not retried or aborted",
 		                       request_context.display_url));
 	}
+	VerifyCreated(config, *response, request_context.display_url);
 	if (!IsSuccessfulStatus(response->status)) {
 		throw GetStatusError(*response, request_context);
 	}

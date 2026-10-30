@@ -329,6 +329,9 @@ unique_ptr<FileHandle> HTTPFileSystem::OpenFileExtended(const OpenFileInfo &file
                                                         optional_ptr<FileOpener> opener) {
 	D_ASSERT(flags.Compression() == FileCompressionType::UNCOMPRESSED);
 
+	if (flags.ReturnNullIfExists() && FileExists(file.path, opener)) {
+		return nullptr;
+	}
 	auto handle = CreateHandle(file, flags, opener);
 
 	if (flags.OpenForWriting() && !flags.OpenForAppending() && !flags.OpenForReading()) {

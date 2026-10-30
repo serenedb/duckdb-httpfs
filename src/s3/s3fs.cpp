@@ -220,6 +220,7 @@ unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, 
 	if (flags.OpenForWriting()) {
 		multipart_upload_policy = auth_params.GetProvider().GetMultipartUploadPolicy();
 		upload_config = S3UploadConfig::ReadFrom(opener, auth_params.GetProvider());
+		upload_config.exclusive = flags.ExclusiveCreate();
 	}
 
 	return make_uniq<S3FileHandle>(*this, file, flags, std::move(request_session), auth_params, upload_config,
