@@ -85,6 +85,7 @@ private:
 
 	void ReadSettings() {
 		FileOpener::TryGetCurrentSetting(opener, "http_timeout", result->timeout, info);
+		FileOpener::TryGetCurrentSetting(opener, "http_connect_timeout_ms", result->connect_timeout_ms, info);
 		FileOpener::TryGetCurrentSetting(opener, "force_download", result->force_download, info);
 		FileOpener::TryGetCurrentSetting(opener, "force_download_threshold", result->force_download_threshold, info);
 		FileOpener::TryGetCurrentSetting(opener, "auto_fallback_to_full_download",

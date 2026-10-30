@@ -69,6 +69,10 @@ void HTTPSettings::Register(DBConfig &config) {
 	                          "HTTP timeout read/write/connection/retry (in seconds); a ranged read fails after this "
 	                          "many seconds plus one per MiB it asks for",
 	                          LogicalType::UBIGINT, Value::UBIGINT(HTTPParams::DEFAULT_TIMEOUT_SECONDS));
+	config.AddExtensionOption("http_connect_timeout_ms",
+	                          "How long connecting to an HTTP server, TLS included, may take before the request is "
+	                          "retried (in milliseconds); never longer than http_timeout",
+	                          LogicalType::UBIGINT, Value::UBIGINT(HTTPParams::DEFAULT_CONNECT_TIMEOUT_MS));
 	config.AddExtensionOption("http_retries", "HTTP retries on I/O error", LogicalType::UBIGINT,
 	                          Value::UBIGINT(HTTPParams::DEFAULT_RETRIES));
 	config.AddExtensionOption("http_retry_wait_ms", "Time between retries", LogicalType::UBIGINT,
