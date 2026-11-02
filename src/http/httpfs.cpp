@@ -426,10 +426,7 @@ bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, const string &url, cons
 bool HTTPFileSystem::ReadAt(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
                             const HTTPReadConfig &read_config) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
-	idx_t read_size = 0;
-	for (auto &target : targets) {
-		read_size += target.size;
-	}
+	const auto read_size = FileReadTarget::TotalSize(targets);
 	if (read_size > NumericLimits<idx_t>::Maximum() - location) {
 		throw IOException("HTTP read range overflow for file \"%s\"", hfh.path);
 	}
@@ -505,11 +502,7 @@ void HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, id
 
 void HTTPFileSystem::ReadScattered(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
-	idx_t read_size = 0;
-	for (auto &target : targets) {
-		read_size += target.size;
-	}
-	if (read_size == 0) {
+	if (FileReadTarget::TotalSize(targets) == 0) {
 		return;
 	}
 	auto read_config = hfh.GetReadConfig();

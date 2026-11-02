@@ -276,10 +276,7 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
                                                             std::span<const FileReadTarget> targets,
                                                             const HTTPErrorCallback &get_error,
                                                             const HTTPSendCallback &send_request) {
-	idx_t buffer_out_len = 0;
-	for (auto &target : targets) {
-		buffer_out_len += target.size;
-	}
+	const auto buffer_out_len = FileReadTarget::TotalSize(targets);
 	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + buffer_out_len - 1);
 	auto request_headers = header_map;
 	request_headers["Range"] = range_expr;
