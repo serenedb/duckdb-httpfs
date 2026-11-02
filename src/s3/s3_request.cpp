@@ -1003,7 +1003,7 @@ unique_ptr<HTTPResponse> S3FileSystem::GetRequest(FileHandle &handle, string s3_
 
 unique_ptr<HTTPResponse> S3FileSystem::GetRangeRequest(FileHandle &handle, string s3_url, HTTPHeaders header_map,
                                                        const HTTPReadConfig &read_config, idx_t file_offset,
-                                                       data_ptr_t buffer_out, idx_t buffer_out_len) {
+                                                       std::span<const FileReadTarget> targets) {
 	auto &s3_handle = handle.Cast<S3FileHandle>();
 	const S3RequestSpec spec {
 	    s3_url, S3RequestOperation::GET_OBJECT, {}, "", "", "", read_config.object_version, read_config.condition};
@@ -1012,7 +1012,7 @@ unique_ptr<HTTPResponse> S3FileSystem::GetRangeRequest(FileHandle &handle, strin
 		                                    auto &params = request_data.http_params->Cast<HTTPFSParams>();
 		                                    return RunGetRangeRequest(
 		                                        s3_handle, request_data.http_url, request_data.headers, params,
-		                                        read_config, file_offset, buffer_out, buffer_out_len,
+		                                        read_config, file_offset, targets,
 		                                        [&](const HTTPResponse &response) {
 			                                        return S3RequestUtil::GetRequestError(request_data, response);
 		                                        },

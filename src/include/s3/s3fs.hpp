@@ -123,7 +123,7 @@ public:
 	                                    const HTTPReadConfig &read_config, CachedFileDownload &download) override;
 	unique_ptr<HTTPResponse> GetRangeRequest(FileHandle &handle, string s3_url, HTTPHeaders header_map,
 	                                         const HTTPReadConfig &read_config, idx_t file_offset,
-	                                         data_ptr_t buffer_out, idx_t buffer_out_len) override;
+	                                         std::span<const FileReadTarget> targets) override;
 	S3RequestResult PostRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                            const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});

@@ -394,11 +394,11 @@ static bool RespondedWithRangeRequestNotSupported(const HTTPResponse &res) {
 }
 
 bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, const string &url, const HTTPHeaders &header_map,
-                                     const HTTPReadConfig &read_config, idx_t file_offset, data_ptr_t buffer_out,
-                                     idx_t buffer_out_len) {
+                                     const HTTPReadConfig &read_config, idx_t file_offset,
+                                     std::span<const FileReadTarget> targets) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
 
-	auto res = GetRangeRequest(handle, url, header_map, read_config, file_offset, buffer_out, buffer_out_len);
+	auto res = GetRangeRequest(handle, url, header_map, read_config, file_offset, targets);
 
 	if (res) {
 		ThrowIfReadConditionFailed(hfh, read_config, *res);
@@ -423,9 +423,13 @@ bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, const string &url, cons
 	throw IOException("Unknown error for HTTP %s to '%s'", EnumUtil::ToString(RequestType::GET_REQUEST), url);
 }
 
-bool HTTPFileSystem::ReadAt(FileHandle &handle, data_ptr_t buffer, idx_t read_size, idx_t location,
+bool HTTPFileSystem::ReadAt(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
                             const HTTPReadConfig &read_config) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
+	idx_t read_size = 0;
+	for (auto &target : targets) {
+		read_size += target.size;
+	}
 	if (read_size > NumericLimits<idx_t>::Maximum() - location) {
 		throw IOException("HTTP read range overflow for file \"%s\"", hfh.path);
 	}
@@ -439,11 +443,15 @@ bool HTTPFileSystem::ReadAt(FileHandle &handle, data_ptr_t buffer, idx_t read_si
 			throw IOException("Cached file length can't satisfy the requested Read. You can try to resolve this by "
 			                  "enabling `SET force_download=true`");
 		}
-		if (read_size > 0) {
-			memcpy(buffer, cached_file->GetData() + location, read_size);
+		auto source = cached_file->GetData() + location;
+		for (auto &target : targets) {
+			if (target.size > 0) {
+				memcpy(target.data, source, target.size);
+			}
+			source += target.size;
 		}
 	} else if (read_size > 0) {
-		if (!TryRangeRequest(hfh, hfh.path, {}, read_config, location, buffer, read_size)) {
+		if (!TryRangeRequest(hfh, hfh.path, {}, read_config, location, targets)) {
 			return false;
 		}
 	}
@@ -452,9 +460,9 @@ bool HTTPFileSystem::ReadAt(FileHandle &handle, data_ptr_t buffer, idx_t read_si
 	return true;
 }
 
-void HTTPFileSystem::ReadAtWithFallback(FileHandle &handle, data_ptr_t buffer, idx_t read_size, idx_t location,
+void HTTPFileSystem::ReadAtWithFallback(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
                                         const HTTPReadConfig &read_config) {
-	auto success = ReadAt(handle, buffer, read_size, location, read_config);
+	auto success = ReadAt(handle, targets, location, read_config);
 	if (success) {
 		return;
 	}
@@ -485,19 +493,27 @@ void HTTPFileSystem::ReadAtWithFallback(FileHandle &handle, data_ptr_t buffer, i
 		    hfh.path, static_cast<uint64_t>(head_reported_length), static_cast<uint64_t>(downloaded_length)));
 	}
 
-	if (!ReadAt(handle, buffer, read_size, location, read_config)) {
+	if (!ReadAt(handle, targets, location, read_config)) {
 		throw HTTPException("Failed to read from HTTP file after automatically retrying a full file download.");
 	}
 }
 
 void HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	const FileReadTarget target {data_ptr_cast(buffer), NumericCast<idx_t>(nr_bytes)};
+	ReadScattered(handle, std::span(&target, 1), location);
+}
+
+void HTTPFileSystem::ReadScattered(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
-	auto read_size = NumericCast<idx_t>(nr_bytes);
+	idx_t read_size = 0;
+	for (auto &target : targets) {
+		read_size += target.size;
+	}
 	if (read_size == 0) {
 		return;
 	}
 	auto read_config = hfh.GetReadConfig();
-	ReadAtWithFallback(handle, data_ptr_cast(buffer), read_size, location, read_config);
+	ReadAtWithFallback(handle, targets, location, read_config);
 }
 
 int64_t HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
@@ -510,7 +526,8 @@ int64_t HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes)
 	read_size = MinValue<idx_t>(hfh.length - hfh.file_offset, read_size);
 	const auto location = hfh.file_offset;
 	auto read_config = hfh.GetReadConfig();
-	ReadAtWithFallback(handle, data_ptr_cast(buffer), read_size, location, read_config);
+	const FileReadTarget target {data_ptr_cast(buffer), read_size};
+	ReadAtWithFallback(handle, std::span(&target, 1), location, read_config);
 	hfh.file_offset += read_size;
 	return NumericCast<int64_t>(read_size);
 }
@@ -1021,7 +1038,8 @@ unique_ptr<HTTPResponse> HTTPFileHandle::RetryFileInfoWithRange(HTTPFileSystem &
                                                                 timestamp_t &response_time) {
 	auto config = BuildReadConfig();
 	request_time = Timestamp::GetCurrentTimestamp();
-	auto response = hfs.GetRangeRequest(*this, path, {}, config, 0, nullptr, 2);
+	const FileReadTarget probe {nullptr, 2};
+	auto response = hfs.GetRangeRequest(*this, path, {}, config, 0, std::span(&probe, 1));
 	response_time = Timestamp::GetCurrentTimestamp();
 	if (response->status == HTTPStatusCode::PartialContent_206 || response->status == HTTPStatusCode::Accepted_202 ||
 	    response->status == HTTPStatusCode::OK_200) {

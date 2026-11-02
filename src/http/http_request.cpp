@@ -130,14 +130,17 @@ static void SetRangeRequestNotSupported(HTTPResponse &response) {
 struct HTTPRangeRequestContext {
 public:
 	HTTPRangeRequestContext(HTTPFileHandle &handle_p, const HTTPReadConfig &read_config_p, string url_p,
-	                        string range_expression_p, data_ptr_t buffer_out_p, idx_t buffer_out_len_p,
-	                        RangeRequestState::Guard range_request_p,
+	                        string range_expression_p, std::span<const FileReadTarget> targets_p,
+	                        idx_t buffer_out_len_p, RangeRequestState::Guard range_request_p,
 	                        std::function<HTTPException(const HTTPResponse &)> get_error_p,
 	                        std::function<void(const HTTPResponse &)> validate_response_p)
 	    : handle(handle_p), read_config(read_config_p), url(std::move(url_p)),
-	      range_expression(std::move(range_expression_p)), buffer_out(buffer_out_p), buffer_out_len(buffer_out_len_p),
+	      range_expression(std::move(range_expression_p)), targets(targets_p), buffer_out_len(buffer_out_len_p),
 	      range_request(std::move(range_request_p)), get_error(std::move(get_error_p)),
 	      validate_response(std::move(validate_response_p)) {
+		for (auto &target : targets) {
+			buffer_out = buffer_out || target.data;
+		}
 	}
 
 public:
@@ -154,6 +157,8 @@ public:
 		}
 
 		out_offset = 0;
+		target_index = 0;
+		target_offset = 0;
 		validate_response(response);
 		if (!ValidateContentLength(response)) {
 			return false;
@@ -172,8 +177,21 @@ public:
 			throw HTTPException("Server sent back more data than expected, `SET force_download=true` might "
 			                    "help in this case");
 		}
-		memcpy(buffer_out + out_offset, data, data_length);
 		out_offset += data_length;
+		while (data_length > 0) {
+			auto &target = targets[target_index];
+			const auto chunk = MinValue(data_length, target.size - target_offset);
+			if (target.data) {
+				memcpy(target.data + target_offset, data, chunk);
+			}
+			data += chunk;
+			data_length -= chunk;
+			target_offset += chunk;
+			if (target_offset == target.size) {
+				target_index++;
+				target_offset = 0;
+			}
+		}
 		return true;
 	}
 
@@ -238,21 +256,30 @@ private:
 	const HTTPReadConfig &read_config;
 	const string url;
 	const string range_expression;
-	data_ptr_t buffer_out;
+	const std::span<const FileReadTarget> targets;
+	//! Whether any target takes the bytes it covers rather than skipping them
+	bool buffer_out = false;
 	const idx_t buffer_out_len;
 	RangeRequestState::Guard range_request;
 	std::function<HTTPException(const HTTPResponse &)> get_error;
 	std::function<void(const HTTPResponse &)> validate_response;
 	idx_t out_offset = 0;
+	//! The target the next bytes go to, and how far into it
+	idx_t target_index = 0;
+	idx_t target_offset = 0;
 	bool range_request_not_supported = false;
 };
 
 unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh, const string &url,
                                                             const HTTPHeaders &header_map, HTTPFSParams &http_params,
                                                             const HTTPReadConfig &read_config, idx_t file_offset,
-                                                            data_ptr_t buffer_out, idx_t buffer_out_len,
+                                                            std::span<const FileReadTarget> targets,
                                                             const HTTPErrorCallback &get_error,
                                                             const HTTPSendCallback &send_request) {
+	idx_t buffer_out_len = 0;
+	for (auto &target : targets) {
+		buffer_out_len += target.size;
+	}
 	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + buffer_out_len - 1);
 	auto request_headers = header_map;
 	request_headers["Range"] = range_expr;
@@ -267,7 +294,7 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
 	}
 
 	const auto request_time = Timestamp::GetCurrentTimestamp();
-	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, buffer_out, buffer_out_len,
+	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, targets, buffer_out_len,
 	                                std::move(range_request), get_error, [&](const HTTPResponse &response) {
 		                                ValidateResponseVersion(hfh, read_config, response);
 		                                hfh.ApplyCachePolicy(response, request_time, Timestamp::GetCurrentTimestamp());
@@ -398,13 +425,12 @@ unique_ptr<HTTPResponse> HTTPFileSystem::GetRequest(FileHandle &handle, string u
 
 unique_ptr<HTTPResponse> HTTPFileSystem::GetRangeRequest(FileHandle &handle, string url, HTTPHeaders header_map,
                                                          const HTTPReadConfig &read_config, idx_t file_offset,
-                                                         data_ptr_t buffer_out, idx_t buffer_out_len) {
+                                                         std::span<const FileReadTarget> targets) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
 	auto captured = hfh.request_session->Capture();
 	auto session_request = captured.snapshot->CreateRequest(std::move(header_map));
 	return RunGetRangeRequest(
-	    hfh, url, session_request.headers, *session_request.params, read_config, file_offset, buffer_out,
-	    buffer_out_len,
+	    hfh, url, session_request.headers, *session_request.params, read_config, file_offset, targets,
 	    [&](const HTTPResponse &response) { return GetHTTPError(handle, response, RequestType::GET_REQUEST, url); },
 	    [&](BaseRequest &request) { return hfh.request_session->Request(request); });
 }
