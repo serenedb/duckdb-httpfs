@@ -1,7 +1,9 @@
 #include "http/httpfs_client.hpp"
 #include "http/http_state.hpp"
+#include "duckdb/common/time_point.hpp"
 #include "duckdb/common/thread_annotation/thread_annotation.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 
@@ -234,10 +236,8 @@ private:
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
-			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT, params.timeout);
-			client.curl->SetOption(CURLOPT_TIMEOUT, 0L);
+			client.ApplyTimeouts(params);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_LIMIT, 1024L);
-			client.curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
 			client.curl->SetOption(CURLOPT_ACCEPT_ENCODING, nullptr);
 			client.curl->SetOption(CURLOPT_FOLLOWLOCATION, params.follow_location ? 1L : 0L);
 			client.curl->SetOption(CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
@@ -457,6 +457,7 @@ public:
 	unique_ptr<HTTPResponse> Get(GetRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::GET_REQUEST);
 		}
@@ -483,6 +484,7 @@ public:
 	unique_ptr<HTTPResponse> Put(PutRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::PUT_REQUEST);
 			state->RecordBytesSent(info.buffer_in_len);
@@ -526,6 +528,7 @@ public:
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::HEAD_REQUEST);
 		}
@@ -562,6 +565,7 @@ public:
 	unique_ptr<HTTPResponse> Delete(DeleteRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::DELETE_REQUEST);
 		}
@@ -595,6 +599,7 @@ public:
 
 	unique_ptr<HTTPResponse> Options(OptionsRequestInfo &info) override {
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::OPTIONS_REQUEST);
 		}
@@ -624,6 +629,7 @@ public:
 	unique_ptr<HTTPResponse> Post(PostRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
+		ApplyTimeouts(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::POST_REQUEST);
 			state->RecordBytesSent(info.buffer_in_len);
@@ -665,9 +671,10 @@ public:
 		}
 
 		request_info->response_code = curl->GetResponseCode();
-		info.buffer_out = request_info->body;
-
-		return TransformBufferedResponseCurl(res);
+		auto response = TransformBufferedResponseCurl(res);
+		// a POST hands its body back through buffer_out
+		info.buffer_out = std::move(response->body);
+		return response;
 	}
 
 	void Cleanup() override {
@@ -702,6 +709,26 @@ public:
 	}
 
 private:
+	//! The time the request has until the caller's deadline, at least 1ms so a missed deadline fails at
+	//! once. 0 means no limit.
+	static long TimeUntilDeadline(optional_idx deadline) { // NOLINT(google-runtime-int): curl takes a long
+		if (!deadline.IsValid()) {
+			return 0L;
+		}
+		auto remaining_ms = TimePoint::ToNanos(NumericCast<int64_t>(deadline.GetIndex()) - TimePoint::Now()) / 1000000;
+		return remaining_ms > 0 ? NumericCast<long>(remaining_ms) : 1L;
+	}
+
+	//! Each request sets its own limits: a reused handle keeps the options of the request before it
+	void ApplyTimeouts(const HTTPParams &params) {
+		auto deadline_ms = TimeUntilDeadline(params.deadline);
+		curl->SetOption(CURLOPT_CONNECTTIMEOUT, params.timeout);
+		curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
+		curl->SetOption(CURLOPT_TIMEOUT_MS, deadline_ms);
+		deadline_ends_request =
+		    deadline_ms != 0 && params.timeout != 0 && static_cast<uint64_t>(deadline_ms) < params.timeout * 1000;
+	}
+
 	static void SetRequestURL(CURLURLHandle &url, const string &request_url, const string &request_path) {
 		// A leading '//' is a network-path reference to the URL API, so set the complete URL in that case.
 		const auto &url_part = StringUtil::StartsWith(request_path, "//") ? request_url : request_path;
@@ -738,6 +765,9 @@ private:
 		auto status_code = HTTPUtil::ToStatusCode(request_info->response_code);
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
+			if (res == CURLE_OPERATION_TIMEDOUT && deadline_ends_request) {
+				ClientContext::ThrowDeadlineExceeded();
+			}
 			response->request_error = curl_easy_strerror(res);
 			return response;
 		}
@@ -826,6 +856,8 @@ private:
 	//! Reuse domain used to configure the current connection.
 	optional_idx transport_reuse_domain;
 	string resolved_cert_file_path;
+	//! The request's deadline comes before its other limits, so a curl timeout is the deadline
+	bool deadline_ends_request = false;
 };
 
 unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClient(HTTPParams &http_params, const string &proto_host_port) {
