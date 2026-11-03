@@ -468,13 +468,9 @@ static bool ListObjects(S3FileSystem &fs, const string &directory,
 }
 
 bool S3FileSystem::ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-                                     optional_ptr<FileOpener> opener) {
-	return ListObjects(*this, directory, callback, opener, S3ListMode::HIERARCHICAL);
-}
-
-void S3FileSystem::ListFilesRecursive(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-                                      optional_ptr<FileOpener> opener) {
-	ListObjects(*this, directory, callback, opener, S3ListMode::FLAT);
+                                     optional_ptr<FileOpener> opener, const ListFilesOptions &options) {
+	return ListObjects(*this, directory, callback, opener,
+	                   options.recursive ? S3ListMode::FLAT : S3ListMode::HIERARCHICAL);
 }
 
 struct S3ListRequest {
