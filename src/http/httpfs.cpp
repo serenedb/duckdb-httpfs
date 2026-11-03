@@ -442,7 +442,7 @@ bool HTTPFileSystem::ReadAt(FileHandle &handle, std::span<const FileReadTarget> 
 		}
 		auto source = cached_file->GetData() + location;
 		for (auto &target : targets) {
-			if (target.size > 0) {
+			if (target.data) {
 				memcpy(target.data, source, target.size);
 			}
 			source += target.size;
