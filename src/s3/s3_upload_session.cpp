@@ -567,10 +567,10 @@ S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, 
 	return result;
 }
 
-string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size) {
+string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size, absl::crc32c_t object_checksum) {
 	HTTPHeaders headers;
 	if (config.checksum) {
-		headers["x-amz-checksum-crc32c"] = EncodeChecksum(Checksum());
+		headers["x-amz-checksum-crc32c"] = EncodeChecksum(object_checksum);
 	}
 	if (config.exclusive) {
 		headers["If-None-Match"] = "*";
@@ -643,11 +643,6 @@ S3UploadSession::MultipartSnapshot S3UploadSession::GetMultipartSnapshot() DUCKD
 		}
 	}
 	return {multipart_upload_id, upload_parts, checksum};
-}
-
-absl::crc32c_t S3UploadSession::Checksum() const DUCKDB_EXCLUDES(state_lock) {
-	annotated_lock_guard<annotated_mutex> guard(state_lock);
-	return checksum;
 }
 
 string S3UploadSession::CompleteMultipartUpload() {
@@ -743,16 +738,18 @@ string S3UploadSession::Finalize() {
 
 	try {
 		bool multipart_upload;
+		absl::crc32c_t object_checksum {0};
 		{
 			annotated_lock_guard<annotated_mutex> guard(state_lock);
 			multipart_upload = !upload_parts.empty();
+			object_checksum = checksum;
 		}
 		string etag;
 		if (!multipart_upload) {
 			if (!local_buffered_part) {
-				etag = UploadObject(nullptr, 0);
+				etag = UploadObject(nullptr, 0, object_checksum);
 			} else {
-				etag = UploadObject(local_buffered_part->Ptr(), local_buffered_part->size);
+				etag = UploadObject(local_buffered_part->Ptr(), local_buffered_part->size, object_checksum);
 			}
 		} else {
 			if (local_buffered_part) {

@@ -155,12 +155,11 @@ private:
 	void StorePart(idx_t part_number, S3CompletedPart part) DUCKDB_EXCLUDES(state_lock);
 	MultipartSnapshot GetMultipartSnapshot() DUCKDB_EXCLUDES(state_lock);
 	string CompleteMultipartUpload();
-	absl::crc32c_t Checksum() const DUCKDB_EXCLUDES(state_lock);
 
 	//! S3 upload and cleanup requests.
 	S3RequestResult RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
 	                                 const S3RequestQuery &query, HTTPHeaders headers);
-	string UploadObject(const_data_ptr_t data, idx_t size);
+	string UploadObject(const_data_ptr_t data, idx_t size, absl::crc32c_t object_checksum);
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
 
@@ -183,7 +182,7 @@ private:
 	const S3UploadConfig config;
 
 	//! Operation and lifecycle synchronization.
-	mutable annotated_mutex state_lock;
+	annotated_mutex state_lock;
 	LifecycleState lifecycle_state DUCKDB_GUARDED_BY(state_lock) = LifecycleState::ACTIVE;
 	idx_t active_operations DUCKDB_GUARDED_BY(state_lock) = 0;
 	//! Parts being sent on the async threads; the last one to finish after a failure cleans up
