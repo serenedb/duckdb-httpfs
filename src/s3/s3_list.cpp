@@ -410,11 +410,11 @@ unique_ptr<MultiFileList> S3FileSystem::GlobFilesExtended(const string &path, co
 	return make_uniq<S3GlobResult>(*this, path, opener);
 }
 
-static bool ListObjects(S3FileSystem &fs, const string &directory,
-                        const std::function<void(OpenFileInfo &info)> &callback, optional_ptr<FileOpener> opener,
-                        S3ListMode mode) {
+bool S3FileSystem::ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
+                                     optional_ptr<FileOpener> opener, const ListFilesOptions &options) {
+	const auto mode = options.recursive ? S3ListMode::FLAT : S3ListMode::HIERARCHICAL;
 	string path = directory;
-	auto sep = fs.PathSeparator(path);
+	auto sep = PathSeparator(path);
 	StringUtil::RTrim(path, sep);
 	path += sep;
 	FileOpenerInfo info = {path};
@@ -435,7 +435,7 @@ static bool ListObjects(S3FileSystem &fs, const string &directory,
 		if (context && context->IsInterrupted()) {
 			throw InterruptException();
 		}
-		auto response = AWSListObjectV2::Request(fs.GetEncryptionUtil(), *session, path, continuation_token, mode);
+		auto response = AWSListObjectV2::Request(GetEncryptionUtil(), *session, path, continuation_token, mode);
 		vector<OpenFileInfo> files;
 		AWSListObjectV2::AppendFileList(response, files);
 		auto captured = session->Capture();
@@ -465,12 +465,6 @@ static bool ListObjects(S3FileSystem &fs, const string &directory,
 		continuation_token = std::move(response.continuation_token);
 	} while (!continuation_token.empty());
 	return listed;
-}
-
-bool S3FileSystem::ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-                                     optional_ptr<FileOpener> opener, const ListFilesOptions &options) {
-	return ListObjects(*this, directory, callback, opener,
-	                   options.recursive ? S3ListMode::FLAT : S3ListMode::HIERARCHICAL);
 }
 
 struct S3ListRequest {
