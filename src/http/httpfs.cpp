@@ -426,7 +426,8 @@ bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, const string &url, cons
 bool HTTPFileSystem::ReadAt(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
                             const HTTPReadConfig &read_config) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
-	const auto read_size = FileReadTarget::TotalSize(targets);
+	FileReadTargetWriter writer(targets);
+	const auto read_size = writer.Capacity();
 	if (read_size > NumericLimits<idx_t>::Maximum() - location) {
 		throw IOException("HTTP read range overflow for file \"%s\"", hfh.path);
 	}
@@ -440,13 +441,7 @@ bool HTTPFileSystem::ReadAt(FileHandle &handle, std::span<const FileReadTarget> 
 			throw IOException("Cached file length can't satisfy the requested Read. You can try to resolve this by "
 			                  "enabling `SET force_download=true`");
 		}
-		auto source = cached_file->GetData() + location;
-		for (auto &target : targets) {
-			if (target.data) {
-				memcpy(target.data, source, target.size);
-			}
-			source += target.size;
-		}
+		writer.Write(const_data_ptr_cast(cached_file->GetData() + location), read_size);
 	} else if (read_size > 0) {
 		if (!TryRangeRequest(hfh, hfh.path, {}, read_config, location, targets)) {
 			return false;

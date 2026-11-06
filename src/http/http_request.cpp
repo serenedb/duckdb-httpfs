@@ -130,14 +130,13 @@ static void SetRangeRequestNotSupported(HTTPResponse &response) {
 struct HTTPRangeRequestContext {
 public:
 	HTTPRangeRequestContext(HTTPFileHandle &handle_p, const HTTPReadConfig &read_config_p, string url_p,
-	                        string range_expression_p, std::span<const FileReadTarget> targets_p,
-	                        idx_t buffer_out_len_p, RangeRequestState::Guard range_request_p,
+	                        string range_expression_p, std::span<const FileReadTarget> targets,
+	                        FileReadTargetWriter writer_p, RangeRequestState::Guard range_request_p,
 	                        std::function<HTTPException(const HTTPResponse &)> get_error_p,
 	                        std::function<void(const HTTPResponse &)> validate_response_p)
 	    : handle(handle_p), read_config(read_config_p), url(std::move(url_p)),
-	      range_expression(std::move(range_expression_p)), targets(targets_p), buffer_out_len(buffer_out_len_p),
-	      range_request(std::move(range_request_p)), get_error(std::move(get_error_p)),
-	      validate_response(std::move(validate_response_p)) {
+	      range_expression(std::move(range_expression_p)), writer(writer_p), range_request(std::move(range_request_p)),
+	      get_error(std::move(get_error_p)), validate_response(std::move(validate_response_p)) {
 		for (auto &target : targets) {
 			buffer_out = buffer_out || target.data;
 		}
@@ -156,9 +155,7 @@ public:
 			return true;
 		}
 
-		out_offset = 0;
-		target_index = 0;
-		target_offset = 0;
+		writer.Reset();
 		validate_response(response);
 		if (!ValidateContentLength(response)) {
 			return false;
@@ -170,27 +167,9 @@ public:
 	}
 
 	bool HandleContent(const_data_ptr_t data, idx_t data_length) {
-		if (!buffer_out) {
-			return true;
-		}
-		if (out_offset > buffer_out_len || data_length > buffer_out_len - out_offset) {
+		if (buffer_out && !writer.Write(data, data_length)) {
 			throw HTTPException("Server sent back more data than expected, `SET force_download=true` might "
 			                    "help in this case");
-		}
-		out_offset += data_length;
-		while (data_length > 0) {
-			auto &target = targets[target_index];
-			const auto chunk = MinValue(data_length, target.size - target_offset);
-			if (target.data) {
-				memcpy(target.data + target_offset, data, chunk);
-			}
-			data += chunk;
-			data_length -= chunk;
-			target_offset += chunk;
-			if (target_offset == target.size) {
-				target_index++;
-				target_offset = 0;
-			}
 		}
 		return true;
 	}
@@ -216,7 +195,7 @@ private:
 		}
 		try {
 			auto content_length = NumericCast<idx_t>(stoull(response.GetHeaderValue("Content-Length")));
-			if (content_length == buffer_out_len) {
+			if (content_length == writer.Capacity()) {
 				return true;
 			}
 			range_request_not_supported = true;
@@ -230,12 +209,12 @@ private:
 
 	void ValidateReadLength(const unique_ptr<HTTPResponse> &response) const {
 		if (!response || response->HasRequestError() || !response->Success() || !buffer_out ||
-		    out_offset == buffer_out_len) {
+		    writer.Written() == writer.Capacity()) {
 			return;
 		}
 		throw IOException("Short read for HTTP GET to '%s': requested range %s (%llu bytes), but received %llu bytes",
-		                  url, range_expression, static_cast<uint64_t>(buffer_out_len),
-		                  static_cast<uint64_t>(out_offset));
+		                  url, range_expression, static_cast<uint64_t>(writer.Capacity()),
+		                  static_cast<uint64_t>(writer.Written()));
 	}
 
 	static bool IsSuccessfulResponse(const unique_ptr<HTTPResponse> &response) {
@@ -247,7 +226,7 @@ private:
 		const auto elapsed_nanos =
 		    TimePoint::ElapsedNanos(request.request_monotonic_start, request.request_monotonic_end);
 		const double total_seconds = elapsed_nanos > 0 ? static_cast<double>(elapsed_nanos) / 1e9 : 0;
-		const idx_t bytes = request.bytes_received != 0 ? request.bytes_received : buffer_out_len;
+		const idx_t bytes = request.bytes_received != 0 ? request.bytes_received : writer.Capacity();
 		handle.RecordNetworkSample(total_seconds, bytes, request.have_time_to_fst_byte, request.time_to_fst_byte_sec);
 	}
 
@@ -256,17 +235,12 @@ private:
 	const HTTPReadConfig &read_config;
 	const string url;
 	const string range_expression;
-	const std::span<const FileReadTarget> targets;
 	//! Whether any target takes the bytes it covers rather than skipping them
 	bool buffer_out = false;
-	const idx_t buffer_out_len;
+	FileReadTargetWriter writer;
 	RangeRequestState::Guard range_request;
 	std::function<HTTPException(const HTTPResponse &)> get_error;
 	std::function<void(const HTTPResponse &)> validate_response;
-	idx_t out_offset = 0;
-	//! The target the next bytes go to, and how far into it
-	idx_t target_index = 0;
-	idx_t target_offset = 0;
 	bool range_request_not_supported = false;
 };
 
@@ -276,8 +250,8 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
                                                             std::span<const FileReadTarget> targets,
                                                             const HTTPErrorCallback &get_error,
                                                             const HTTPSendCallback &send_request) {
-	const auto buffer_out_len = FileReadTarget::TotalSize(targets);
-	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + buffer_out_len - 1);
+	FileReadTargetWriter writer(targets);
+	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + writer.Capacity() - 1);
 	auto request_headers = header_map;
 	request_headers["Range"] = range_expr;
 	ApplyReadCondition(request_headers, read_config);
@@ -291,8 +265,8 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
 	}
 
 	const auto request_time = Timestamp::GetCurrentTimestamp();
-	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, targets, buffer_out_len,
-	                                std::move(range_request), get_error, [&](const HTTPResponse &response) {
+	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, targets, writer, std::move(range_request),
+	                                get_error, [&](const HTTPResponse &response) {
 		                                ValidateResponseVersion(hfh, read_config, response);
 		                                hfh.ApplyCachePolicy(response, request_time, Timestamp::GetCurrentTimestamp());
 	                                });
