@@ -12,39 +12,12 @@
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/parallel/task.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/storage/object_cache.hpp"
 
 #include <cstring>
 
 namespace duckdb {
 
 namespace {
-
-//! The queue of the parts sent on the async threads: an object of the database, which goes before its scheduler
-class S3UploadProducer : public ObjectCacheEntry {
-public:
-	explicit S3UploadProducer(TaskScheduler &scheduler) : token(scheduler.CreateProducer()) {
-	}
-
-	static string ObjectType() {
-		return "s3_upload_producer";
-	}
-	string GetObjectType() override {
-		return ObjectType();
-	}
-	optional_idx GetEstimatedCacheMemory() const override {
-		return optional_idx();
-	}
-
-	const unique_ptr<ProducerToken> token;
-};
-
-ProducerToken &UploadProducer(DatabaseInstance &db) {
-	auto producer = db.GetObjectCache().GetOrCreate<S3UploadProducer>(S3UploadProducer::ObjectType(),
-	                                                                  TaskScheduler::GetScheduler(db));
-	return *producer->token;
-}
 
 class S3AmbiguousUploadException : public IOException {
 public:
@@ -870,8 +843,8 @@ void S3UploadSession::ScheduleUpload(PreparedPart part) {
 		ThrowFailure(failure);
 	}
 	auto task = make_shared_ptr<PartUploadTask>(*this, std::move(part));
-	auto &db = s3fs.get().GetBufferManager().GetDatabase();
-	TaskScheduler::GetScheduler(db).ScheduleTask(UploadProducer(db), std::move(task), TaskSchedulerType::ASYNC);
+	auto &scheduler = TaskScheduler::GetScheduler(s3fs.get().GetBufferManager().GetDatabase());
+	scheduler.ScheduleTask(scheduler.GetDatabaseProducer(), std::move(task), TaskSchedulerType::ASYNC);
 }
 
 void S3UploadSession::UploadInBackground(PreparedPart &part) noexcept {
