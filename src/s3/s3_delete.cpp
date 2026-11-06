@@ -371,14 +371,12 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 }
 
 void S3FileSystem::RemoveDirectory(const string &path, optional_ptr<FileOpener> opener) {
-	string directory = path;
-	StringUtil::RTrim(directory, PathSeparator(directory));
 	vector<string> files_to_remove;
 	ListFilesOptions recursive;
 	recursive.recursive = true;
 	ListFiles(
-	    directory, [&](OpenFileInfo &file) { files_to_remove.push_back(JoinPath(directory, file.path)); }, opener,
-	    recursive);
+	    path, [&](OpenFileInfo &file) { files_to_remove.push_back(JoinPath(path, file.path)); }, opener, recursive);
+
 	RemoveFiles(files_to_remove, opener);
 }
 
