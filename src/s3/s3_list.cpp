@@ -442,7 +442,7 @@ bool S3FileSystem::ListFilesExtended(const string &directory, const std::functio
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
 		for (auto &file : files) {
 			file.path = child_name(file.path);
-			if (file.path.empty() || StringUtil::EndsWith(file.path, sep)) {
+			if (file.path.empty()) {
 				continue;
 			}
 			if (snapshot.region_redirected) {
