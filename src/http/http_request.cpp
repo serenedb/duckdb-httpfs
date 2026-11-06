@@ -131,11 +131,11 @@ struct HTTPRangeRequestContext {
 public:
 	HTTPRangeRequestContext(HTTPFileHandle &handle_p, const HTTPReadConfig &read_config_p, string url_p,
 	                        string range_expression_p, std::span<const FileReadTarget> targets,
-	                        FileReadTargetWriter writer_p, RangeRequestState::Guard range_request_p,
+	                        RangeRequestState::Guard range_request_p,
 	                        std::function<HTTPException(const HTTPResponse &)> get_error_p,
 	                        std::function<void(const HTTPResponse &)> validate_response_p)
 	    : handle(handle_p), read_config(read_config_p), url(std::move(url_p)),
-	      range_expression(std::move(range_expression_p)), writer(writer_p), range_request(std::move(range_request_p)),
+	      range_expression(std::move(range_expression_p)), writer(targets), range_request(std::move(range_request_p)),
 	      get_error(std::move(get_error_p)), validate_response(std::move(validate_response_p)) {
 		for (auto &target : targets) {
 			buffer_out = buffer_out || target.data;
@@ -250,8 +250,8 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
                                                             std::span<const FileReadTarget> targets,
                                                             const HTTPErrorCallback &get_error,
                                                             const HTTPSendCallback &send_request) {
-	FileReadTargetWriter writer(targets);
-	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + writer.Capacity() - 1);
+	const auto buffer_out_len = FileReadTarget::TotalSize(targets);
+	auto range_expr = "bytes=" + to_string(file_offset) + "-" + to_string(file_offset + buffer_out_len - 1);
 	auto request_headers = header_map;
 	request_headers["Range"] = range_expr;
 	ApplyReadCondition(request_headers, read_config);
@@ -265,8 +265,8 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
 	}
 
 	const auto request_time = Timestamp::GetCurrentTimestamp();
-	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, targets, writer, std::move(range_request),
-	                                get_error, [&](const HTTPResponse &response) {
+	HTTPRangeRequestContext context(hfh, read_config, url, range_expr, targets, std::move(range_request), get_error,
+	                                [&](const HTTPResponse &response) {
 		                                ValidateResponseVersion(hfh, read_config, response);
 		                                hfh.ApplyCachePolicy(response, request_time, Timestamp::GetCurrentTimestamp());
 	                                });
