@@ -8,6 +8,7 @@
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -104,11 +105,7 @@ string S3FileSystem::GetVersionTag(FileHandle &handle) {
 
 shared_ptr<const HTTPRequestSnapshot> S3FileHandle::CreateRequestSnapshot(const HTTPFSParams &params) const {
 	auto captured = request_session->Capture();
-	auto &s3_snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
-	return make_shared_ptr<S3RequestSnapshot>(params, s3_snapshot.auth_params, s3_snapshot.refresh_path,
-	                                          s3_snapshot.client_context, s3_snapshot.credential_refresh_enabled,
-	                                          s3_snapshot.region_redirected, s3_snapshot.credential_generation,
-	                                          s3_snapshot.multipart_upload_policy);
+	return make_shared_ptr<S3RequestSnapshot>(params, captured.snapshot->Cast<S3RequestSnapshot>());
 }
 
 S3FileHandle::~S3FileHandle() = default;
@@ -125,7 +122,10 @@ void S3FileHandle::Close() {
 void S3FileHandle::FinalizeUpload() {
 	auto upload_claim = ClaimUpload(false);
 	if (upload_claim) {
-		upload_claim.Get().Finalize();
+		auto uploaded_etag = upload_claim.Get().Finalize();
+		if (!uploaded_etag.empty()) {
+			etag = std::move(uploaded_etag);
+		}
 	}
 }
 
@@ -219,7 +219,8 @@ unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, 
 	optional<S3MultipartUploadPolicy> multipart_upload_policy;
 	if (flags.OpenForWriting()) {
 		multipart_upload_policy = auth_params.GetProvider().GetMultipartUploadPolicy();
-		upload_config = S3UploadConfig::ReadFrom(opener, *multipart_upload_policy);
+		upload_config = S3UploadConfig::ReadFrom(opener, auth_params.GetProvider());
+		upload_config.exclusive = flags.ExclusiveCreate();
 	}
 
 	return make_uniq<S3FileHandle>(*this, file, flags, std::move(request_session), auth_params, upload_config,
@@ -247,19 +248,19 @@ HTTPMetadataCacheEntry S3FileHandle::GetCacheEntry() const {
 
 void S3FileHandle::Initialize(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
 	auto context = FileOpener::TryGetClientContext(opener);
+	auto database = FileOpener::TryGetDatabase(opener);
 	auto refresh_enabled = S3RequestExecutor::CredentialRefreshEnabled(opener);
 	{
 		auto captured = request_session->Capture();
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
-		weak_ptr<ClientContext> weak_context;
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot);
+		replacement->credential_refresh_enabled = refresh_enabled;
 		if (context && refresh_enabled) {
-			weak_context = context->shared_from_this();
+			replacement->client_context = context->shared_from_this();
+		} else if (database && refresh_enabled) {
+			replacement->database = database->shared_from_this();
 		}
-		request_session->TryPublish(
-		    captured.snapshot,
-		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot.auth_params, snapshot.refresh_path,
-		                                       std::move(weak_context), refresh_enabled, snapshot.region_redirected,
-		                                       snapshot.credential_generation, snapshot.multipart_upload_policy));
+		request_session->TryPublish(captured.snapshot, std::move(replacement));
 	}
 	HTTPFileHandle::Initialize(file, opener);
 }

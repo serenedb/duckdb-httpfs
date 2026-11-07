@@ -40,7 +40,7 @@ public:
 	                                    const HTTPReadConfig &read_config, CachedFileDownload &download) override;
 	unique_ptr<HTTPResponse> GetRangeRequest(FileHandle &handle, string hf_url, HTTPHeaders header_map,
 	                                         const HTTPReadConfig &read_config, idx_t file_offset,
-	                                         data_ptr_t buffer_out, idx_t buffer_out_len) override;
+	                                         std::span<const FileReadTarget> targets) override;
 
 	//! List response parsing
 	static void ParseListResult(const string &input, vector<string> &files, vector<string> &directories);

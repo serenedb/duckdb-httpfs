@@ -429,6 +429,10 @@ bool S3Provider::SupportsSSECustomerKey() const {
 	return profile == S3CompatibilityProfile::S3;
 }
 
+bool S3Provider::SupportsFullObjectChecksum() const {
+	return profile == S3CompatibilityProfile::S3;
+}
+
 string S3Provider::GetBadRequestError(const S3AuthParams &auth_params, const string &correct_region) const {
 	if (GetType() != S3ProviderType::S3) {
 		return {};
