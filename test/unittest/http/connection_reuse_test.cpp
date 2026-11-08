@@ -160,8 +160,9 @@ static void RunHTTPStateCounterScenario(HTTPFSUtil &http_util) {
 	auto get_response = http_util.Request(get, client);
 	REQUIRE(get_response);
 
-	PutRequestInfo put(server.HTTPPath(), HTTPHeaders(), params, const_data_ptr_cast(put_body.data()), put_body.size(),
-	                   "application/octet-stream");
+	const string put_type = "application/octet-stream";
+	const HTTPBodyPiece put_piece {const_data_ptr_cast(put_body.data()), put_body.size()};
+	PutRequestInfo put(server.HTTPPath(), HTTPHeaders(), params, std::span(&put_piece, 1), put_type);
 	auto put_response = http_util.Request(put, client);
 	REQUIRE(put_response);
 
@@ -400,8 +401,8 @@ TEST_CASE("HTTP PUT respects explicit Content-Type and retains the fallback", "[
 					headers.Insert("cOnTeNt-TyPe", "application/xml");
 				}
 				const string body = "payload";
-				PutRequestInfo request(server.HTTPPath(), headers, params, const_data_ptr_cast(body.data()),
-				                       body.size(), fallback_type);
+				const HTTPBodyPiece piece {const_data_ptr_cast(body.data()), body.size()};
+				PutRequestInfo request(server.HTTPPath(), headers, params, std::span(&piece, 1), fallback_type);
 				auto response = http_util.get().Request(request, client);
 				REQUIRE(response);
 				REQUIRE(response->Success());
@@ -433,8 +434,8 @@ TEST_CASE("Curl pooled bodyless requests do not inherit upload state", "[httpfs]
 			if (put_first) {
 				const string body = "payload";
 				const string content_type = "application/octet-stream";
-				PutRequestInfo request(server.HTTPPath(), {}, params, const_data_ptr_cast(body.data()), body.size(),
-				                       content_type);
+				const HTTPBodyPiece piece {const_data_ptr_cast(body.data()), body.size()};
+				PutRequestInfo request(server.HTTPPath(), {}, params, std::span(&piece, 1), content_type);
 				REQUIRE(session.Request(request)->Success());
 			} else {
 				HeadRequestInfo request(server.HTTPPath(), {}, params);
