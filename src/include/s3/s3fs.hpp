@@ -110,6 +110,8 @@ public:
 	void AbortFileWrite(FileHandle &handle) override;
 	FileWriteMode GetWriteMode(FileHandle &) override;
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+	void WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location,
+	               unique_ptr<FileWriteHold> hold) override;
 
 	//! S3 is object storage so directories effectively always exist
 	FileExistence TryDirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr,
@@ -126,8 +128,8 @@ public:
 	                            string &buffer_out, const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                            const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
 	S3RequestResult PutRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
-	                           const_data_ptr_t buffer_in, idx_t buffer_in_len,
-	                           const S3RequestQuery &query = S3RequestQuery(), HTTPHeaders extra_headers = {});
+	                           std::span<const HTTPBodyPiece> body, const S3RequestQuery &query = S3RequestQuery(),
+	                           HTTPHeaders extra_headers = {});
 	S3RequestResult DeleteRequest(HTTPRequestSession &session, S3RequestOperation operation, const string &s3_url,
 	                              const S3RequestQuery &query);
 	unique_ptr<HTTPResponse> DeleteRequest(FileHandle &handle, const string &s3_url, HTTPHeaders header_map) override;
@@ -154,6 +156,7 @@ protected:
 private:
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
 	                                       const string &body, idx_t key_count, string &result);
+	void WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold);
 
 	//! Database-owned buffer manager.
 	BufferManager &buffer_manager;

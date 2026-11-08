@@ -4,6 +4,7 @@
 #include "s3/s3_xml_response.hpp"
 
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
@@ -42,14 +43,23 @@ private:
 	struct BufferedPart {
 		BufferedPart(BufferHandle buffer_p, idx_t capacity_p) : buffer(std::move(buffer_p)), capacity(capacity_p) {
 		}
+		BufferedPart() : capacity(0) {
+		}
 
+		bool Held() const {
+			return !buffer.IsValid();
+		}
 		data_ptr_t Ptr() {
 			return buffer.GetDataMutable();
 		}
+		std::span<const HTTPBodyPiece> Body(HTTPBodyPiece &whole);
 
 		BufferHandle buffer;
 		const idx_t capacity;
 		idx_t size = 0;
+		vector<HTTPBodyPiece> pieces;
+		vector<unique_ptr<FileWriteHold>> holds;
+		absl::crc32c_t pieces_checksum {0};
 	};
 
 	struct PreparedPart {
@@ -57,8 +67,8 @@ private:
 		    : part_number(part_number_p), data(data_p), size(size_p) {
 		}
 		PreparedPart(idx_t part_number_p, unique_ptr<BufferedPart> buffered_part_p)
-		    : part_number(part_number_p), buffered_part(std::move(buffered_part_p)), data(buffered_part->Ptr()),
-		      size(buffered_part->size) {
+		    : part_number(part_number_p), buffered_part(std::move(buffered_part_p)),
+		      data(buffered_part->Held() ? nullptr : buffered_part->Ptr()), size(buffered_part->size) {
 		}
 
 		idx_t part_number;
@@ -114,7 +124,7 @@ public:
 	~S3UploadSession() noexcept;
 
 	//! Upload operations.
-	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location);
+	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold);
 	string Finalize();
 	bool Abort();
 
@@ -142,9 +152,13 @@ private:
 	void ThrowIfFailed() DUCKDB_EXCLUDES(state_lock);
 
 	//! Buffered write construction.
-	PreparedWrite PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location) DUCKDB_EXCLUDES(state_lock);
+	PreparedWrite PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold)
+	    DUCKDB_EXCLUDES(state_lock);
 	unique_ptr<BufferedPart> AllocateBufferedPart(idx_t capacity);
 	static idx_t AppendToBufferedPart(BufferedPart &buffered_part, const_data_ptr_t data, idx_t size);
+	void AppendHeldPiece(PreparedWrite &write, const_data_ptr_t data, idx_t size, absl::crc32c_t piece_checksum,
+	                     unique_ptr<FileWriteHold> hold) DUCKDB_REQUIRES(state_lock);
+	unique_ptr<BufferedPart> CopyHeldPart(const BufferedPart &held) DUCKDB_REQUIRES(state_lock);
 	void ReservePart(PreparedWrite &write, const_data_ptr_t data, idx_t size) DUCKDB_REQUIRES(state_lock);
 	void ReservePart(PreparedWrite &write, unique_ptr<BufferedPart> buffered_part) DUCKDB_REQUIRES(state_lock);
 
@@ -157,9 +171,9 @@ private:
 	string CompleteMultipartUpload();
 
 	//! S3 upload and cleanup requests.
-	S3RequestResult RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
+	S3RequestResult RunUploadRequest(S3RequestOperation operation, std::span<const HTTPBodyPiece> body,
 	                                 const S3RequestQuery &query, HTTPHeaders headers);
-	string UploadObject(const_data_ptr_t data, idx_t size, absl::crc32c_t object_checksum);
+	string UploadObject(std::span<const HTTPBodyPiece> body, absl::crc32c_t object_checksum);
 	void UploadPart(PreparedPart &part);
 	shared_ptr<const ErrorData> AbortMultipartUpload(const string &upload_id);
 

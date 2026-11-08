@@ -322,6 +322,42 @@ shared_ptr<const ErrorData> S3UploadSession::AbortMultipartUpload(const string &
 	}
 }
 
+std::span<const HTTPBodyPiece> S3UploadSession::BufferedPart::Body(HTTPBodyPiece &whole) {
+	if (Held()) {
+		return pieces;
+	}
+	whole = {Ptr(), size};
+	return {&whole, 1};
+}
+
+void S3UploadSession::AppendHeldPiece(PreparedWrite &write, const_data_ptr_t data, idx_t size,
+                                      absl::crc32c_t piece_checksum, unique_ptr<FileWriteHold> hold)
+    DUCKDB_REQUIRES(state_lock) {
+	if (size == 0) {
+		return;
+	}
+	if (buffered_part && buffered_part->size >= config.TargetPartSize(upload_parts.size())) {
+		ReservePart(write, std::move(buffered_part));
+	}
+	if (!buffered_part) {
+		buffered_part = make_uniq<BufferedPart>();
+	}
+	buffered_part->pieces.push_back({data, size});
+	buffered_part->holds.push_back(std::move(hold));
+	buffered_part->pieces_checksum = absl::ConcatCrc32c(buffered_part->pieces_checksum, piece_checksum, size);
+	buffered_part->size += size;
+}
+
+unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::CopyHeldPart(const BufferedPart &held)
+    DUCKDB_REQUIRES(state_lock) {
+	auto copy = AllocateBufferedPart(MaxValue(held.size, config.TargetPartSize(upload_parts.size())));
+	for (auto &piece : held.pieces) {
+		memcpy(copy->Ptr() + copy->size, piece.data, piece.size);
+		copy->size += piece.size;
+	}
+	return copy;
+}
+
 unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::AllocateBufferedPart(idx_t capacity) {
 	auto buffer = s3fs.get().GetBufferManager().Allocate(MemoryTag::EXTENSION, capacity);
 	return make_uniq<BufferedPart>(std::move(buffer), capacity);
@@ -354,7 +390,8 @@ void S3UploadSession::ReservePart(PreparedWrite &write, unique_ptr<BufferedPart>
 	write.parts.emplace_back(part_number, std::move(buffered_part_p));
 }
 
-S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location)
+S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location,
+                                                             unique_ptr<FileWriteHold> hold)
     DUCKDB_EXCLUDES(state_lock) {
 	absl::crc32c_t write_checksum {0};
 	if (config.checksum) {
@@ -377,6 +414,14 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 		} else {
 			if (config.checksum) {
 				checksum = absl::ConcatCrc32c(checksum, write_checksum, size);
+			}
+			if (hold && config.checksum && (!buffered_part || buffered_part->Held())) {
+				AppendHeldPiece(result, data, size, write_checksum, std::move(hold));
+				next_offset += size;
+				return result;
+			}
+			if (buffered_part && buffered_part->Held()) {
+				buffered_part = CopyHeldPart(*buffered_part);
 			}
 			result.buffered_part = std::move(buffered_part);
 			idx_t input_offset = 0;
@@ -530,9 +575,9 @@ void S3UploadSession::ThrowIfFailed() DUCKDB_EXCLUDES(state_lock) {
 	}
 }
 
-S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, const_data_ptr_t data, idx_t size,
+S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, std::span<const HTTPBodyPiece> body,
                                                   const S3RequestQuery &query, HTTPHeaders headers) {
-	auto result = s3fs.get().PutRequest(*request_session, operation, path, data, size, query, std::move(headers));
+	auto result = s3fs.get().PutRequest(*request_session, operation, path, body, query, std::move(headers));
 	if (result.response->HasRequestError()) {
 		throw IOException("S3 upload request for \"%s\" could not be completed: %s", result.context.display_url,
 		                  result.response->GetRequestError());
@@ -540,7 +585,7 @@ S3RequestResult S3UploadSession::RunUploadRequest(S3RequestOperation operation, 
 	return result;
 }
 
-string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size, absl::crc32c_t object_checksum) {
+string S3UploadSession::UploadObject(std::span<const HTTPBodyPiece> body, absl::crc32c_t object_checksum) {
 	HTTPHeaders headers;
 	if (config.checksum) {
 		headers["x-amz-checksum-crc32c"] = EncodeChecksum(object_checksum);
@@ -548,8 +593,7 @@ string S3UploadSession::UploadObject(const_data_ptr_t data, idx_t size, absl::cr
 	if (config.exclusive) {
 		headers["If-None-Match"] = "*";
 	}
-	auto request_result =
-	    RunUploadRequest(S3RequestOperation::PUT_OBJECT, data, size, S3RequestQuery(), std::move(headers));
+	auto request_result = RunUploadRequest(S3RequestOperation::PUT_OBJECT, body, S3RequestQuery(), std::move(headers));
 	auto &response = request_result.response;
 	VerifyCreated(config, *response, request_result.context.display_url);
 	if (response->status != HTTPStatusCode::OK_200 && response->status != HTTPStatusCode::Created_201) {
@@ -568,13 +612,16 @@ void S3UploadSession::UploadPart(PreparedPart &part) {
 	S3RequestQuery query {{"partNumber", to_string(part.part_number)}, {"uploadId", *upload_id}};
 	S3CompletedPart completed;
 	HTTPHeaders headers;
+	const bool held = part.buffered_part && part.buffered_part->Held();
 	if (config.checksum) {
 		completed.checksum_crc32c =
-		    EncodeChecksum(absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(part.data), part.size)));
+		    EncodeChecksum(held ? part.buffered_part->pieces_checksum
+		                        : absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(part.data), part.size)));
 		headers["x-amz-checksum-crc32c"] = completed.checksum_crc32c;
 	}
-	auto request_result =
-	    RunUploadRequest(S3RequestOperation::UPLOAD_PART, part.data, part.size, query, std::move(headers));
+	HTTPBodyPiece whole {part.data, part.size};
+	const auto body = part.buffered_part ? part.buffered_part->Body(whole) : std::span<const HTTPBodyPiece>(&whole, 1);
+	auto request_result = RunUploadRequest(S3RequestOperation::UPLOAD_PART, body, query, std::move(headers));
 	auto &response = request_result.response;
 	if (response->status != HTTPStatusCode::OK_200) {
 		throw GetStatusError(*response, request_result.context);
@@ -681,11 +728,12 @@ HTTPException S3UploadSession::GetStatusError(const HTTPResponse &response, cons
 	return S3RequestUtil::GetRequestError(request_context, response);
 }
 
-S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t size, idx_t location) {
+S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t size, idx_t location,
+                                                   unique_ptr<FileWriteHold> hold) {
 	BeginWriteOperation();
 	WriteClaim claim(*this);
 	try {
-		auto write = PrepareWrite(data, size, location);
+		auto write = PrepareWrite(data, size, location, std::move(hold));
 		for (auto &part : write.parts) {
 			ThrowIfFailed();
 			if (part.buffered_part && UploadsInBackground()) {
@@ -720,9 +768,10 @@ string S3UploadSession::Finalize() {
 		string etag;
 		if (!multipart_upload) {
 			if (!local_buffered_part) {
-				etag = UploadObject(nullptr, 0, object_checksum);
+				etag = UploadObject({}, object_checksum);
 			} else {
-				etag = UploadObject(local_buffered_part->Ptr(), local_buffered_part->size, object_checksum);
+				HTTPBodyPiece whole;
+				etag = UploadObject(local_buffered_part->Body(whole), object_checksum);
 			}
 		} else {
 			if (local_buffered_part) {

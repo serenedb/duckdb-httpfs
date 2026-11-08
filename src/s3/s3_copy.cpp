@@ -24,7 +24,7 @@ void S3FileSystem::MoveFile(const string &source, const string &target, optional
 	                               S3Url::Encode(key, S3URLEncodeMode::PATH);
 	auto session = S3RequestExecutor::CreateSession(opener, target, auth_params);
 	auto request_result =
-	    PutRequest(*session, S3RequestOperation::COPY_OBJECT, target, nullptr, 0, S3RequestQuery(), std::move(headers));
+	    PutRequest(*session, S3RequestOperation::COPY_OBJECT, target, {}, S3RequestQuery(), std::move(headers));
 	auto &response = request_result.response;
 	if (response->HasRequestError()) {
 		throw IOException("S3 copy of \"%s\" to \"%s\" could not be completed: %s", source,

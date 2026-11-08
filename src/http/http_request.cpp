@@ -62,10 +62,10 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunPostRequest(const string &url, const
 }
 
 unique_ptr<HTTPResponse> HTTPFileSystem::RunPutRequest(const string &url, const HTTPHeaders &header_map,
-                                                       HTTPFSParams &http_params, const_data_ptr_t buffer_in,
-                                                       idx_t buffer_in_len, const string &content_type,
+                                                       HTTPFSParams &http_params, std::span<const HTTPBodyPiece> body,
+                                                       const string &content_type,
                                                        const HTTPSendCallback &send_request) {
-	PutRequestInfo put_request(url, header_map, http_params, buffer_in, buffer_in_len, content_type);
+	PutRequestInfo put_request(url, header_map, http_params, body, content_type);
 	return send_request(put_request);
 }
 

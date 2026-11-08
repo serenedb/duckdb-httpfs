@@ -43,6 +43,18 @@ static string SelectCURLCertPath() {
 	return string();
 }
 
+static size_t ReadBody(char *buffer, size_t size, size_t nitems, void *userp) {
+	return static_cast<HTTPBodyReader *>(userp)->Read(data_ptr_cast(buffer), size * nitems);
+}
+
+static int SeekBody(void *userp, curl_off_t offset, int origin) {
+	if (origin != SEEK_SET || offset < 0) {
+		return CURL_SEEKFUNC_CANTSEEK;
+	}
+	return static_cast<HTTPBodyReader *>(userp)->Seek(NumericCast<idx_t>(offset)) ? CURL_SEEKFUNC_OK
+	                                                                              : CURL_SEEKFUNC_FAIL;
+}
+
 static size_t RequestHeaderCallback(char *contents, size_t size, size_t nmemb, void *userp) {
 	auto total_size = size * nmemb;
 	string header(char_ptr_cast(contents), total_size);
@@ -518,6 +530,7 @@ public:
 		if (!info.headers.HasHeader("Content-Type")) {
 			curl_headers.Add("Content-Type: " + info.content_type);
 		}
+		const bool pieced = !info.pieces.empty();
 		// transform parameters
 		request_info->url = info.url;
 
@@ -532,7 +545,17 @@ public:
 			// Perform PUT
 			curl->SetOption(CURLOPT_CUSTOMREQUEST, "PUT");
 			// Include PUT body
-			curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
+			HTTPBodyReader reader(info.pieces);
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 1L);
+				curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
+				curl->SetOption(CURLOPT_READFUNCTION, ReadBody);
+				curl->SetOption(CURLOPT_READDATA, &reader);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, SeekBody);
+				curl->SetOption(CURLOPT_SEEKDATA, &reader);
+			} else {
+				curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
+			}
 			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, NumericCast<curl_off_t>(info.buffer_in_len));
 
 			// Apply headers
@@ -542,6 +565,13 @@ public:
 			curl->SetOption(CURLOPT_CUSTOMREQUEST, nullptr);
 			curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
 			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(0));
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 0L);
+				curl->SetOption(CURLOPT_READFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_READDATA, nullptr);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_SEEKDATA, nullptr);
+			}
 		}
 
 		request_info->response_code = curl->GetResponseCode();

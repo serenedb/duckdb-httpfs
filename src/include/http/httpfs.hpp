@@ -228,9 +228,8 @@ protected:
 	                                               const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                                               const HTTPSendCallback &send_request);
 	static unique_ptr<HTTPResponse> RunPutRequest(const string &url, const HTTPHeaders &header_map,
-	                                              HTTPFSParams &http_params, const_data_ptr_t buffer_in,
-	                                              idx_t buffer_in_len, const string &content_type,
-	                                              const HTTPSendCallback &send_request);
+	                                              HTTPFSParams &http_params, std::span<const HTTPBodyPiece> body,
+	                                              const string &content_type, const HTTPSendCallback &send_request);
 	unique_ptr<HTTPResponse> RunGetRequest(HTTPFileHandle &handle, const string &url, const HTTPHeaders &header_map,
 	                                       HTTPFSParams &http_params, const HTTPReadConfig &read_config,
 	                                       CachedFileDownload &download, const HTTPErrorCallback &get_error,
