@@ -223,6 +223,7 @@ struct HTTPStateCounters {
 	idx_t post_count = 0;
 	idx_t delete_count = 0;
 	idx_t options_count = 0;
+	idx_t patch_count = 0;
 
 	//! Transferred bytes
 	idx_t total_bytes_received = 0;
@@ -265,6 +266,7 @@ private:
 	atomic<idx_t> post_count {0};
 	atomic<idx_t> delete_count {0};
 	atomic<idx_t> options_count {0};
+	atomic<idx_t> patch_count {0};
 	atomic<idx_t> total_bytes_received {0};
 	atomic<idx_t> total_bytes_sent {0};
 

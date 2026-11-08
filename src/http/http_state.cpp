@@ -6,7 +6,7 @@ namespace duckdb {
 
 bool HTTPStateCounters::IsEmpty() const {
 	return head_count == 0 && get_count == 0 && put_count == 0 && post_count == 0 && delete_count == 0 &&
-	       options_count == 0 && total_bytes_received == 0 && total_bytes_sent == 0;
+	       options_count == 0 && patch_count == 0 && total_bytes_received == 0 && total_bytes_sent == 0;
 }
 
 unique_ptr<CachedFileHandle> CachedFile::TryGetHandle() {
@@ -134,6 +134,7 @@ void HTTPState::Reset() {
 	post_count = 0;
 	delete_count = 0;
 	options_count = 0;
+	patch_count = 0;
 	total_bytes_received = 0;
 	total_bytes_sent = 0;
 
@@ -162,6 +163,9 @@ void HTTPState::RecordRequest(RequestType request_type) {
 	case RequestType::OPTIONS_REQUEST:
 		options_count++;
 		break;
+	case RequestType::PATCH_REQUEST:
+		patch_count++;
+		break;
 	default:
 		throw InternalException("Unsupported HTTP request type");
 	}
@@ -183,6 +187,7 @@ HTTPStateCounters HTTPState::GetCounters() const {
 	result.post_count = post_count.load();
 	result.delete_count = delete_count.load();
 	result.options_count = options_count.load();
+	result.patch_count = patch_count.load();
 	result.total_bytes_received = total_bytes_received.load();
 	result.total_bytes_sent = total_bytes_sent.load();
 	return result;
@@ -214,6 +219,7 @@ void HTTPState::WriteProfilingInformation(std::ostream &ss) {
 	string post = "#POST: " + to_string(counters.post_count);
 	string del = "#DELETE: " + to_string(counters.delete_count);
 	string options = "#OPTIONS: " + to_string(counters.options_count);
+	string patch = "#PATCH: " + to_string(counters.patch_count);
 
 	constexpr idx_t TOTAL_BOX_WIDTH = 39;
 	ss << "┌─────────────────────────────────────┐\n";
@@ -228,6 +234,7 @@ void HTTPState::WriteProfilingInformation(std::ostream &ss) {
 	ss << "││" + QueryProfiler::DrawPadded(post, TOTAL_BOX_WIDTH - 4) + "││\n";
 	ss << "││" + QueryProfiler::DrawPadded(del, TOTAL_BOX_WIDTH - 4) + "││\n";
 	ss << "││" + QueryProfiler::DrawPadded(options, TOTAL_BOX_WIDTH - 4) + "││\n";
+	ss << "││" + QueryProfiler::DrawPadded(patch, TOTAL_BOX_WIDTH - 4) + "││\n";
 	ss << "│└───────────────────────────────────┘│\n";
 	ss << "└─────────────────────────────────────┘\n";
 }
