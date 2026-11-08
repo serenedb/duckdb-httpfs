@@ -58,6 +58,9 @@ public:
 	unique_ptr<HTTPResponse> Options(OptionsRequestInfo &) override {
 		return Success();
 	}
+	unique_ptr<HTTPResponse> Patch(PatchRequestInfo &) override {
+		return Success();
+	}
 
 private:
 	static unique_ptr<HTTPResponse> Success() {

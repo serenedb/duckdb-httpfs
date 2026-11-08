@@ -519,64 +519,11 @@ public:
 	}
 
 	unique_ptr<HTTPResponse> Put(PutRequestInfo &info) override {
-		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
-		if (state) {
-			state->RecordRequest(RequestType::PUT_REQUEST);
-			state->RecordBytesSent(info.buffer_in_len);
-		}
+		return SendBody(info, "PUT");
+	}
 
-		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
-		if (!info.headers.HasHeader("Content-Type")) {
-			curl_headers.Add("Content-Type: " + info.content_type);
-		}
-		const bool pieced = !info.pieces.empty();
-		// transform parameters
-		request_info->url = info.url;
-
-		CURLcode res;
-		{
-			CURLURLHandle url(curl_base_url);
-			SetRequestURL(url, info.url, info.path);
-
-			curl->SetOption(CURLOPT_URL, nullptr);
-			curl->SetOption(CURLOPT_CURLU, url.Get());
-
-			// Perform PUT
-			curl->SetOption(CURLOPT_CUSTOMREQUEST, "PUT");
-			// Include PUT body
-			HTTPBodyReader reader(info.pieces);
-			if (pieced) {
-				curl->SetOption(CURLOPT_POST, 1L);
-				curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
-				curl->SetOption(CURLOPT_READFUNCTION, ReadBody);
-				curl->SetOption(CURLOPT_READDATA, &reader);
-				curl->SetOption(CURLOPT_SEEKFUNCTION, SeekBody);
-				curl->SetOption(CURLOPT_SEEKDATA, &reader);
-			} else {
-				curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
-			}
-			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, NumericCast<curl_off_t>(info.buffer_in_len));
-
-			// Apply headers
-			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
-
-			res = curl->Execute();
-			curl->SetOption(CURLOPT_CUSTOMREQUEST, nullptr);
-			curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
-			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(0));
-			if (pieced) {
-				curl->SetOption(CURLOPT_POST, 0L);
-				curl->SetOption(CURLOPT_READFUNCTION, nullptr);
-				curl->SetOption(CURLOPT_READDATA, nullptr);
-				curl->SetOption(CURLOPT_SEEKFUNCTION, nullptr);
-				curl->SetOption(CURLOPT_SEEKDATA, nullptr);
-			}
-		}
-
-		request_info->response_code = curl->GetResponseCode();
-
-		return TransformBufferedResponseCurl(res);
+	unique_ptr<HTTPResponse> Patch(PatchRequestInfo &info) override {
+		return SendBody(info, "PATCH");
 	}
 
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &info) override {
@@ -758,6 +705,65 @@ public:
 	}
 
 private:
+	unique_ptr<HTTPResponse> SendBody(BodyRequestInfo &info, const char *method) {
+		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
+		ResetRequestInfo();
+		if (state) {
+			state->RecordRequest(info.type);
+			state->RecordBytesSent(info.buffer_in_len);
+		}
+
+		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
+		if (!info.headers.HasHeader("Content-Type")) {
+			curl_headers.Add("Content-Type: " + info.content_type);
+		}
+		const bool pieced = !info.pieces.empty();
+		// transform parameters
+		request_info->url = info.url;
+
+		CURLcode res;
+		{
+			CURLURLHandle url(curl_base_url);
+			SetRequestURL(url, info.url, info.path);
+
+			curl->SetOption(CURLOPT_URL, nullptr);
+			curl->SetOption(CURLOPT_CURLU, url.Get());
+
+			curl->SetOption(CURLOPT_CUSTOMREQUEST, method);
+			HTTPBodyReader reader(info.pieces);
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 1L);
+				curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
+				curl->SetOption(CURLOPT_READFUNCTION, ReadBody);
+				curl->SetOption(CURLOPT_READDATA, &reader);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, SeekBody);
+				curl->SetOption(CURLOPT_SEEKDATA, &reader);
+			} else {
+				curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
+			}
+			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, NumericCast<curl_off_t>(info.buffer_in_len));
+
+			// Apply headers
+			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
+
+			res = curl->Execute();
+			curl->SetOption(CURLOPT_CUSTOMREQUEST, nullptr);
+			curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
+			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(0));
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 0L);
+				curl->SetOption(CURLOPT_READFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_READDATA, nullptr);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_SEEKDATA, nullptr);
+			}
+		}
+
+		request_info->response_code = curl->GetResponseCode();
+
+		return TransformBufferedResponseCurl(res);
+	}
+
 	static void SetRequestURL(CURLURLHandle &url, const string &request_url, const string &request_path) {
 		// A leading '//' is a network-path reference to the URL API, so set the complete URL in that case.
 		const auto &url_part = StringUtil::StartsWith(request_path, "//") ? request_url : request_path;

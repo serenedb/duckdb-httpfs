@@ -309,6 +309,8 @@ const char *HTTPFSUtil::GetRequestMethod(RequestType request_type) {
 		return "POST";
 	case RequestType::OPTIONS_REQUEST:
 		return "OPTIONS";
+	case RequestType::PATCH_REQUEST:
+		return "PATCH";
 	}
 	throw InternalException("Unsupported HTTP request type");
 }
