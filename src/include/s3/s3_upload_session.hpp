@@ -59,22 +59,24 @@ private:
 		idx_t size = 0;
 		vector<HTTPBodyPiece> pieces;
 		vector<unique_ptr<FileWriteHold>> holds;
-		absl::crc32c_t pieces_checksum {0};
+		absl::crc32c_t checksum {0};
 	};
 
 	struct PreparedPart {
-		PreparedPart(idx_t part_number_p, const_data_ptr_t data_p, idx_t size_p)
-		    : part_number(part_number_p), data(data_p), size(size_p) {
+		PreparedPart(idx_t part_number_p, const_data_ptr_t data_p, idx_t size_p, absl::crc32c_t checksum_p)
+		    : part_number(part_number_p), data(data_p), size(size_p), checksum(checksum_p) {
 		}
 		PreparedPart(idx_t part_number_p, unique_ptr<BufferedPart> buffered_part_p)
 		    : part_number(part_number_p), buffered_part(std::move(buffered_part_p)),
-		      data(buffered_part->Held() ? nullptr : buffered_part->Ptr()), size(buffered_part->size) {
+		      data(buffered_part->Held() ? nullptr : buffered_part->Ptr()), size(buffered_part->size),
+		      checksum(buffered_part->checksum) {
 		}
 
 		idx_t part_number;
 		unique_ptr<BufferedPart> buffered_part;
 		const_data_ptr_t data;
 		idx_t size;
+		absl::crc32c_t checksum;
 	};
 
 	struct PreparedWrite {
@@ -124,7 +126,8 @@ public:
 	~S3UploadSession() noexcept;
 
 	//! Upload operations.
-	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold);
+	WriteClaim Write(const_data_ptr_t data, idx_t size, idx_t location, absl::crc32c_t held_checksum,
+	                 unique_ptr<FileWriteHold> hold);
 	string Finalize();
 	bool Abort();
 
@@ -152,10 +155,10 @@ private:
 	void ThrowIfFailed() DUCKDB_EXCLUDES(state_lock);
 
 	//! Buffered write construction.
-	PreparedWrite PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold)
-	    DUCKDB_EXCLUDES(state_lock);
+	PreparedWrite PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location, absl::crc32c_t held_checksum,
+	                           unique_ptr<FileWriteHold> hold) DUCKDB_EXCLUDES(state_lock);
 	unique_ptr<BufferedPart> AllocateBufferedPart(idx_t capacity);
-	static idx_t AppendToBufferedPart(BufferedPart &buffered_part, const_data_ptr_t data, idx_t size);
+	idx_t AppendToBufferedPart(BufferedPart &buffered_part, const_data_ptr_t data, idx_t size) const;
 	void AppendHeldPiece(PreparedWrite &write, const_data_ptr_t data, idx_t size, absl::crc32c_t piece_checksum,
 	                     unique_ptr<FileWriteHold> hold) DUCKDB_REQUIRES(state_lock);
 	unique_ptr<BufferedPart> CopyHeldPart(const BufferedPart &held) DUCKDB_REQUIRES(state_lock);

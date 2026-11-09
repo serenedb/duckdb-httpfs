@@ -344,7 +344,7 @@ void S3UploadSession::AppendHeldPiece(PreparedWrite &write, const_data_ptr_t dat
 	}
 	buffered_part->pieces.push_back({data, size});
 	buffered_part->holds.push_back(std::move(hold));
-	buffered_part->pieces_checksum = absl::ConcatCrc32c(buffered_part->pieces_checksum, piece_checksum, size);
+	buffered_part->checksum = absl::ConcatCrc32c(buffered_part->checksum, piece_checksum, size);
 	buffered_part->size += size;
 }
 
@@ -355,6 +355,7 @@ unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::CopyHeldPart(const Bu
 		memcpy(copy->Ptr() + copy->size, piece.data, piece.size);
 		copy->size += piece.size;
 	}
+	copy->checksum = held.checksum;
 	return copy;
 }
 
@@ -363,10 +364,15 @@ unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::AllocateBufferedPart(
 	return make_uniq<BufferedPart>(std::move(buffer), capacity);
 }
 
-idx_t S3UploadSession::AppendToBufferedPart(BufferedPart &buffered_part_p, const_data_ptr_t data, idx_t size) {
+idx_t S3UploadSession::AppendToBufferedPart(BufferedPart &buffered_part_p, const_data_ptr_t data, idx_t size) const {
 	D_ASSERT(buffered_part_p.size < buffered_part_p.capacity);
 	auto copy_size = MinValue<idx_t>(size, buffered_part_p.capacity - buffered_part_p.size);
-	memcpy(buffered_part_p.Ptr() + buffered_part_p.size, data, copy_size);
+	auto target = buffered_part_p.Ptr() + buffered_part_p.size;
+	if (config.checksum) {
+		buffered_part_p.checksum = absl::MemcpyCrc32c(target, data, copy_size, buffered_part_p.checksum);
+	} else {
+		memcpy(target, data, copy_size);
+	}
 	buffered_part_p.size += copy_size;
 	return copy_size;
 }
@@ -375,9 +381,14 @@ void S3UploadSession::ReservePart(PreparedWrite &write, const_data_ptr_t data, i
 	if (!config.HasPartCapacity(upload_parts.size())) {
 		throw IOException("S3 upload exceeds the configured maximum of %llu multipart parts", config.max_parts);
 	}
+	absl::crc32c_t part_checksum {0};
+	if (config.checksum) {
+		part_checksum = absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(data), size));
+		checksum = absl::ConcatCrc32c(checksum, part_checksum, size);
+	}
 	auto part_number = upload_parts.size() + 1;
 	upload_parts.emplace_back();
-	write.parts.emplace_back(part_number, data, size);
+	write.parts.emplace_back(part_number, data, size, part_checksum);
 }
 
 void S3UploadSession::ReservePart(PreparedWrite &write, unique_ptr<BufferedPart> buffered_part_p)
@@ -385,18 +396,18 @@ void S3UploadSession::ReservePart(PreparedWrite &write, unique_ptr<BufferedPart>
 	if (!config.HasPartCapacity(upload_parts.size())) {
 		throw IOException("S3 upload exceeds the configured maximum of %llu multipart parts", config.max_parts);
 	}
+	if (config.checksum) {
+		checksum = absl::ConcatCrc32c(checksum, buffered_part_p->checksum, buffered_part_p->size);
+	}
 	auto part_number = upload_parts.size() + 1;
 	upload_parts.emplace_back();
 	write.parts.emplace_back(part_number, std::move(buffered_part_p));
 }
 
 S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t data, idx_t size, idx_t location,
+                                                             absl::crc32c_t held_checksum,
                                                              unique_ptr<FileWriteHold> hold)
     DUCKDB_EXCLUDES(state_lock) {
-	absl::crc32c_t write_checksum {0};
-	if (config.checksum) {
-		write_checksum = absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(data), size));
-	}
 	FailureSnapshot failure;
 	PreparedWrite result;
 	{
@@ -412,11 +423,8 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 		} else if (size > config.max_file_size - next_offset) {
 			throw IOException("S3 upload exceeds the configured maximum file size of %llu bytes", config.max_file_size);
 		} else {
-			if (config.checksum) {
-				checksum = absl::ConcatCrc32c(checksum, write_checksum, size);
-			}
 			if (hold && config.checksum && (!buffered_part || buffered_part->Held())) {
-				AppendHeldPiece(result, data, size, write_checksum, std::move(hold));
+				AppendHeldPiece(result, data, size, held_checksum, std::move(hold));
 				next_offset += size;
 				return result;
 			}
@@ -612,11 +620,8 @@ void S3UploadSession::UploadPart(PreparedPart &part) {
 	S3RequestQuery query {{"partNumber", to_string(part.part_number)}, {"uploadId", *upload_id}};
 	S3CompletedPart completed;
 	HTTPHeaders headers;
-	const bool held = part.buffered_part && part.buffered_part->Held();
 	if (config.checksum) {
-		completed.checksum_crc32c =
-		    EncodeChecksum(held ? part.buffered_part->pieces_checksum
-		                        : absl::ComputeCrc32c(absl::string_view(const_char_ptr_cast(part.data), part.size)));
+		completed.checksum_crc32c = EncodeChecksum(part.checksum);
 		headers["x-amz-checksum-crc32c"] = completed.checksum_crc32c;
 	}
 	HTTPBodyPiece whole {part.data, part.size};
@@ -729,11 +734,11 @@ HTTPException S3UploadSession::GetStatusError(const HTTPResponse &response, cons
 }
 
 S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t size, idx_t location,
-                                                   unique_ptr<FileWriteHold> hold) {
+                                                   absl::crc32c_t held_checksum, unique_ptr<FileWriteHold> hold) {
 	BeginWriteOperation();
 	WriteClaim claim(*this);
 	try {
-		auto write = PrepareWrite(data, size, location, std::move(hold));
+		auto write = PrepareWrite(data, size, location, held_checksum, std::move(hold));
 		for (auto &part : write.parts) {
 			ThrowIfFailed();
 			if (part.buffered_part && UploadsInBackground()) {
@@ -759,19 +764,17 @@ string S3UploadSession::Finalize() {
 
 	try {
 		bool multipart_upload;
-		absl::crc32c_t object_checksum {0};
 		{
 			annotated_lock_guard<annotated_mutex> guard(state_lock);
 			multipart_upload = !upload_parts.empty();
-			object_checksum = checksum;
 		}
 		string etag;
 		if (!multipart_upload) {
 			if (!local_buffered_part) {
-				etag = UploadObject({}, object_checksum);
+				etag = UploadObject({}, absl::crc32c_t {0});
 			} else {
 				HTTPBodyPiece whole;
-				etag = UploadObject(local_buffered_part->Body(whole), object_checksum);
+				etag = UploadObject(local_buffered_part->Body(whole), local_buffered_part->checksum);
 			}
 		} else {
 			if (local_buffered_part) {

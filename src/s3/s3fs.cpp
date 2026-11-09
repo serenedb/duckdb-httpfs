@@ -312,22 +312,22 @@ void S3FileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx
 	if (nr_bytes < 0) {
 		throw InternalException("S3 write size cannot be negative");
 	}
-	WriteAt(handle, const_data_ptr_cast(buffer), NumericCast<idx_t>(nr_bytes), location, nullptr);
+	WriteAt(handle, const_data_ptr_cast(buffer), NumericCast<idx_t>(nr_bytes), location, 0, nullptr);
 }
 
-void S3FileSystem::WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location,
+void S3FileSystem::WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location, uint32_t crc32c,
                              unique_ptr<FileWriteHold> hold) {
-	WriteAt(handle, buffer, nr_bytes, location, std::move(hold));
+	WriteAt(handle, buffer, nr_bytes, location, crc32c, std::move(hold));
 }
 
-void S3FileSystem::WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t write_size, idx_t location,
+void S3FileSystem::WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t write_size, idx_t location, uint32_t crc32c,
                            unique_ptr<FileWriteHold> hold) {
 	auto &s3fh = handle.Cast<S3FileHandle>();
 	if (!s3fh.flags.OpenForWriting()) {
 		throw InternalException("Write called on file not opened in write mode");
 	}
 	auto upload_claim = s3fh.ClaimUpload(true);
-	auto write_claim = upload_claim.Get().Write(data, write_size, location, std::move(hold));
+	auto write_claim = upload_claim.Get().Write(data, write_size, location, absl::crc32c_t {crc32c}, std::move(hold));
 	{
 		annotated_lock_guard<annotated_mutex> guard(s3fh.cursor_mutex);
 		auto write_end = location + write_size;

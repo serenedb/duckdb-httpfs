@@ -110,7 +110,7 @@ public:
 	void AbortFileWrite(FileHandle &handle) override;
 	FileWriteMode GetWriteMode(FileHandle &) override;
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
-	void WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location,
+	void WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location, uint32_t crc32c,
 	               unique_ptr<FileWriteHold> hold) override;
 
 	//! S3 is object storage so directories effectively always exist
@@ -156,7 +156,8 @@ protected:
 private:
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
 	                                       const string &body, idx_t key_count, string &result);
-	void WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t size, idx_t location, unique_ptr<FileWriteHold> hold);
+	void WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t size, idx_t location, uint32_t crc32c,
+	             unique_ptr<FileWriteHold> hold);
 
 	//! Database-owned buffer manager.
 	BufferManager &buffer_manager;
