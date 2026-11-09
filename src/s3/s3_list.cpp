@@ -412,11 +412,14 @@ unique_ptr<MultiFileList> S3FileSystem::GlobFilesExtended(const string &path, co
 
 bool S3FileSystem::ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
                                      optional_ptr<FileOpener> opener, const ListFilesOptions &options) {
+	return ListDirectory(directory, callback, opener, options, false);
+}
+
+bool S3FileSystem::ListDirectory(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
+                                 optional_ptr<FileOpener> opener, const ListFilesOptions &options, bool markers) {
 	const auto mode = options.recursive ? S3ListMode::FLAT : S3ListMode::HIERARCHICAL;
-	string path = directory;
+	auto path = GetDirectoryPath(directory);
 	auto sep = PathSeparator(path);
-	StringUtil::RTrim(path, sep);
-	path += sep;
 	FileOpenerInfo info = {path};
 	auto auth_params = S3AuthResolver::Resolve(opener, info);
 	const auto prefix = S3Url::Parse(path, auth_params).GetKey();
@@ -437,14 +440,11 @@ bool S3FileSystem::ListFilesExtended(const string &directory, const std::functio
 		}
 		auto response = AWSListObjectV2::Request(GetEncryptionUtil(), *session, path, continuation_token, mode);
 		vector<OpenFileInfo> files;
-		AWSListObjectV2::AppendFileList(response, files);
+		AWSListObjectV2::AppendFileList(response, files, markers);
 		auto captured = session->Capture();
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
 		for (auto &file : files) {
 			file.path = child_name(file.path);
-			if (file.path.empty()) {
-				continue;
-			}
 			if (snapshot.region_redirected) {
 				file.extended_info->options["s3_region"] = snapshot.auth_params.GetCredentials().region;
 			}
@@ -544,11 +544,12 @@ S3ListObjectsV2Result AWSListObjectV2::Request(EncryptionUtil &encryption_util, 
 	return S3ListRequest::Finish(request_result.context, std::move(request_result.response), std::move(parsed_result));
 }
 
-void AWSListObjectV2::AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result) {
+void AWSListObjectV2::AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result,
+                                     bool markers) {
 	for (const auto &object : response.objects) {
 		try {
 			auto parsed_path = S3Url::Decode(object.key);
-			if (parsed_path.back() == '/') {
+			if (!markers && parsed_path.back() == '/') {
 				continue;
 			}
 			OpenFileInfo result_file(parsed_path);
