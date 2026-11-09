@@ -160,11 +160,16 @@ S3UploadConfig S3UploadConfig::ReadFrom(optional_ptr<FileOpener> opener, const S
 	if (FileOpener::TryGetCurrentSetting(opener, "s3_uploader_parts_in_flight", value)) {
 		result.parts_in_flight = value.GetValue<uint64_t>();
 	}
-	if (FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value)) {
-		result.checksum = value.GetValue<bool>();
-	}
-	result.checksum = result.checksum && provider.SupportsFullObjectChecksum();
+	result.checksum = ChecksumEnabled(opener, provider);
 	return result;
+}
+
+bool S3UploadConfig::ChecksumEnabled(optional_ptr<FileOpener> opener, const S3Provider &provider) {
+	Value value;
+	if (FileOpener::TryGetCurrentSetting(opener, "s3_upload_checksum", value) && !value.GetValue<bool>()) {
+		return false;
+	}
+	return provider.SupportsFullObjectChecksum();
 }
 
 idx_t S3UploadConfig::TargetPartSize(idx_t reserved_parts) const {

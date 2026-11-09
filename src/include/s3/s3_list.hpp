@@ -12,7 +12,8 @@ struct AWSListObjectV2 {
 	                                     const string &path, const string &continuation_token, S3ListMode mode,
 	                                     optional_idx max_keys = optional_idx(),
 	                                     optional_ptr<const string> prefix = nullptr);
-	static void AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result);
+	static void AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result,
+	                           bool markers = false);
 };
 
 } // namespace duckdb

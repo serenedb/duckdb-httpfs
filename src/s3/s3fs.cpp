@@ -1,10 +1,13 @@
 #include "s3/s3fs.hpp"
 
+#include "s3/s3_list.hpp"
 #include "s3/s3_provider.hpp"
 #include "s3/s3_upload_session.hpp"
 #include "s3/s3_url.hpp"
 
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/uuid.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/config.hpp"
@@ -286,8 +289,84 @@ FileWriteMode S3FileSystem::GetWriteMode(FileHandle &) {
 	return FileWriteMode::CONCURRENT_SEQUENTIAL;
 }
 
-FileExistence S3FileSystem::TryDirectoryExists(const string &, optional_ptr<FileOpener>, optional_ptr<ErrorData>) {
-	return FileExistence::EXISTS;
+string S3FileSystem::GetDirectoryPath(const string &directory) {
+	auto sep = PathSeparator(directory);
+	auto result = directory;
+	StringUtil::RTrim(result, sep);
+	return result + sep;
+}
+
+FileExistence S3FileSystem::TryDirectoryExists(const string &directory, optional_ptr<FileOpener> opener,
+                                               optional_ptr<ErrorData> error) {
+	try {
+		auto path = GetDirectoryPath(directory);
+		FileOpenerInfo info = {path};
+		auto auth_params = S3AuthResolver::Resolve(opener, info);
+		if (S3Url::Parse(path, auth_params).GetKey().empty()) {
+			return FileExistence::EXISTS;
+		}
+		auto marker = TryFileExists(path, opener, error);
+		if (marker != FileExistence::MISSING) {
+			return marker;
+		}
+		auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+		auto response = AWSListObjectV2::Request(GetEncryptionUtil(), *session, path, "", S3ListMode::FLAT, 1);
+		return response.objects.empty() ? FileExistence::MISSING : FileExistence::EXISTS;
+	} catch (std::exception &ex) {
+		return ClassifyExistenceFailure(ex, error);
+	}
+}
+
+void S3FileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
+	CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
+}
+
+bool S3FileSystem::CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &,
+                                           optional_ptr<FileOpener> opener) {
+	auto path = GetDirectoryPath(directory);
+	FileOpenerInfo info = {path};
+	auto auth_params = S3AuthResolver::Resolve(opener, info);
+	if (S3Url::Parse(path, auth_params).GetKey().empty()) {
+		return false;
+	}
+	static constexpr const char *CREATE_ID = "x-amz-meta-duckdb-create-id";
+	const auto create_id = UUID::ToString(UUID::GenerateRandomUUID());
+	HTTPHeaders headers;
+	headers["If-None-Match"] = "*";
+	headers[CREATE_ID] = create_id;
+	if (S3UploadConfig::ChecksumEnabled(opener, auth_params.GetProvider())) {
+		headers["x-amz-checksum-crc32c"] = S3UploadSession::EncodeChecksum(absl::crc32c_t {0});
+	}
+	auto verify = [](const S3RequestResult &result) {
+		auto &response = *result.response;
+		if (response.HasRequestError()) {
+			throw IOException("S3 request to create directory \"%s\" could not be completed: %s",
+			                  result.context.display_url, response.GetRequestError());
+		}
+		if (response.status != HTTPStatusCode::OK_200) {
+			throw S3RequestUtil::GetRequestError(result.context, response);
+		}
+	};
+	auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+	auto created = PutRequest(*session, S3RequestOperation::PUT_OBJECT, path, {}, S3RequestQuery(), std::move(headers));
+	if (created.response->status != HTTPStatusCode::PreconditionFailed_412) {
+		verify(created);
+		return true;
+	}
+	auto marker = S3RequestExecutor::RunSession(
+	    GetEncryptionUtil(), *session, S3RequestSpec {path, S3RequestOperation::HEAD_OBJECT, {}, "", "", ""},
+	    [&](S3RequestData &request_data) {
+		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
+		    return RunHeadRequest(request_data.http_url, request_data.headers, params, [&](BaseRequest &request) {
+			    return S3RequestExecutor::SendSessionRequest(*session, request_data, request);
+		    });
+	    });
+	if (marker.response->status == HTTPStatusCode::NotFound_404) {
+		return false;
+	}
+	verify(marker);
+	auto &marker_headers = marker.response->headers;
+	return marker_headers.HasHeader(CREATE_ID) && marker_headers.GetHeaderValue(CREATE_ID) == create_id;
 }
 
 bool S3FileSystem::SupportsListFilesExtended() const {

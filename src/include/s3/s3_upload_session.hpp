@@ -131,6 +131,8 @@ public:
 	string Finalize();
 	bool Abort();
 
+	static string EncodeChecksum(absl::crc32c_t checksum);
+
 private:
 	//! Operation admission and lifecycle transitions.
 	void BeginWriteOperation() DUCKDB_EXCLUDES(state_lock);

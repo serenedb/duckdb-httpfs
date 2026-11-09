@@ -105,6 +105,9 @@ public:
 	void RemoveFiles(const vector<string> &filenames, optional_ptr<FileOpener> opener = nullptr) override;
 	//! Copies the object server side in one request (at most 5 GiB), checks the copy, then deletes the source
 	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener = nullptr) override;
+	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	bool CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &options,
+	                             optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	void FileSync(FileHandle &handle) override;
 	void AbortFileWrite(FileHandle &handle) override;
@@ -113,7 +116,6 @@ public:
 	void WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location, uint32_t crc32c,
 	               unique_ptr<FileWriteHold> hold) override;
 
-	//! S3 is object storage so directories effectively always exist
 	FileExistence TryDirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr,
 	                                 optional_ptr<ErrorData> error = nullptr) override;
 
@@ -154,6 +156,9 @@ protected:
 	                                        optional_ptr<FileOpener> opener) override;
 
 private:
+	string GetDirectoryPath(const string &directory);
+	bool ListDirectory(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
+	                   optional_ptr<FileOpener> opener, const ListFilesOptions &options, bool markers);
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
 	                                       const string &body, idx_t key_count, string &result);
 	void WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t size, idx_t location, uint32_t crc32c,

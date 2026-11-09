@@ -30,11 +30,6 @@ static bool IsSuccessfulStatus(HTTPStatusCode status) {
 	return status_code >= 200 && status_code < 300;
 }
 
-static string EncodeChecksum(absl::crc32c_t checksum) {
-	const auto value = BSwapIfLE(static_cast<uint32_t>(checksum));
-	return Blob::ToBase64(string_t(const_char_ptr_cast(&value), sizeof(value)));
-}
-
 static void VerifyCreated(const S3UploadConfig &config, const HTTPResponse &response, const string &display_url) {
 	if (config.exclusive && response.status == HTTPStatusCode::PreconditionFailed_412) {
 		throw IOException("Cannot create file \"%s\": File exists", display_url);
@@ -731,6 +726,11 @@ string S3UploadSession::GetDisplayPath() const {
 
 HTTPException S3UploadSession::GetStatusError(const HTTPResponse &response, const S3RequestContext &request_context) {
 	return S3RequestUtil::GetRequestError(request_context, response);
+}
+
+string S3UploadSession::EncodeChecksum(absl::crc32c_t checksum) {
+	const auto value = BSwapIfLE(static_cast<uint32_t>(checksum));
+	return Blob::ToBase64(string_t(const_char_ptr_cast(&value), sizeof(value)));
 }
 
 S3UploadSession::WriteClaim S3UploadSession::Write(const_data_ptr_t data, idx_t size, idx_t location,

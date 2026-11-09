@@ -14,6 +14,7 @@ struct S3UploadConfig {
 public:
 	static S3UploadConfig Create(uint64_t max_file_size, uint64_t max_parts, const S3MultipartUploadPolicy &policy);
 	static S3UploadConfig ReadFrom(optional_ptr<FileOpener> opener, const S3Provider &provider);
+	static bool ChecksumEnabled(optional_ptr<FileOpener> opener, const S3Provider &provider);
 
 	idx_t TargetPartSize(idx_t reserved_parts) const;
 	idx_t DirectPartSize(idx_t reserved_parts, idx_t remaining) const;
