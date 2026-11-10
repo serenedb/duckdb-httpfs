@@ -498,10 +498,11 @@ public:
 
 	static long RangeDeadlineMs(const HTTPHeaders &headers, const HTTPFSParams &params) {
 		static constexpr uint64_t MIN_BYTES_PER_SECOND = 1ULL << 20;
-		if (!headers.HasHeader("Range")) {
+		const auto name = headers.HasHeader("Range") ? "Range" : "x-ms-range";
+		if (!headers.HasHeader(name)) {
 			return 0;
 		}
-		const auto range = headers.GetHeaderValue("Range");
+		const auto range = headers.GetHeaderValue(name);
 		const auto equals = range.find('=');
 		const auto dash = equals == string::npos ? string::npos : range.find('-', equals);
 		uint64_t first = 0;
