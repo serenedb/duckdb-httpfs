@@ -802,9 +802,9 @@ private:
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
 			response->request_error = curl_easy_strerror(res);
-			curl_off_t pretransfer = 0;
+			long request_size = 0; // NOLINT(google-runtime-int): required by curl_easy_getinfo
 			response->unsent =
-			    curl_easy_getinfo(*curl, CURLINFO_PRETRANSFER_TIME_T, &pretransfer) == CURLE_OK && pretransfer == 0;
+			    curl_easy_getinfo(*curl, CURLINFO_REQUEST_SIZE, &request_size) == CURLE_OK && request_size == 0;
 			return response;
 		}
 		if (include_body) {
