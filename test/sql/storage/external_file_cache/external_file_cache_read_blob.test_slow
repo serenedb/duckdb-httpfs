@@ -9,6 +9,9 @@ require httpfs
 statement ok
 CALL enable_logging('HTTP');
 
+statement ok
+SET external_file_cache_remote_max_block_size=4194304;
+
 # first read_blob should do 1 GET
 statement ok
 from read_blob('https://blobs.duckdb.org/data/shakespeare.parquet');
