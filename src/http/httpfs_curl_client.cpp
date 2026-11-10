@@ -1,5 +1,6 @@
 #include "http/httpfs_client.hpp"
 #include "http/http_state.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/thread_annotation/thread_annotation.hpp"
 #include "duckdb/logging/logger.hpp"
 
@@ -40,6 +41,18 @@ static string SelectCURLCertPath() {
 		}
 	}
 	return string();
+}
+
+static size_t ReadBody(char *buffer, size_t size, size_t nitems, void *userp) {
+	return static_cast<HTTPBodyReader *>(userp)->Read(data_ptr_cast(buffer), size * nitems);
+}
+
+static int SeekBody(void *userp, curl_off_t offset, int origin) {
+	if (origin != SEEK_SET || offset < 0) {
+		return CURL_SEEKFUNC_CANTSEEK;
+	}
+	return static_cast<HTTPBodyReader *>(userp)->Seek(NumericCast<idx_t>(offset)) ? CURL_SEEKFUNC_OK
+	                                                                              : CURL_SEEKFUNC_FAIL;
 }
 
 static size_t RequestHeaderCallback(char *contents, size_t size, size_t nmemb, void *userp) {
@@ -234,7 +247,8 @@ private:
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
-			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT, params.timeout);
+			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT_MS, NumericCast<long>(MinValue<uint64_t>(
+			                                                      params.connect_timeout_ms, params.timeout * 1000)));
 			client.curl->SetOption(CURLOPT_TIMEOUT, 0L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_LIMIT, 1024L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
@@ -474,53 +488,43 @@ public:
 			curl->SetOption(CURLOPT_URL, nullptr);
 			curl->SetOption(CURLOPT_CURLU, url.Get());
 			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
+			curl->SetOption(CURLOPT_TIMEOUT_MS, RangeDeadlineMs(info.headers, info.params.Cast<HTTPFSParams>()));
 			GetTransferState transfer(*this, info);
 			res = curl->Execute();
+			curl->SetOption(CURLOPT_TIMEOUT_MS, 0L);
 			return transfer.Finish(res);
 		}
 	}
 
+	static long RangeDeadlineMs(const HTTPHeaders &headers, const HTTPFSParams &params) {
+		static constexpr uint64_t MIN_BYTES_PER_SECOND = 1ULL << 20;
+		const auto name = headers.HasHeader("Range") ? "Range" : "x-ms-range";
+		if (!headers.HasHeader(name)) {
+			return 0;
+		}
+		const auto range = headers.GetHeaderValue(name);
+		const auto equals = range.find('=');
+		const auto dash = equals == string::npos ? string::npos : range.find('-', equals);
+		uint64_t first = 0;
+		uint64_t last = 0;
+		if (dash == string::npos ||
+		    !TryCast::Operation(string_t(range.data() + equals + 1, UnsafeNumericCast<uint32_t>(dash - equals - 1)),
+		                        first) ||
+		    !TryCast::Operation(string_t(range.data() + dash + 1, UnsafeNumericCast<uint32_t>(range.size() - dash - 1)),
+		                        last) ||
+		    last < first) {
+			return 0;
+		}
+		const auto seconds = params.timeout + (last - first + 1) / MIN_BYTES_PER_SECOND;
+		return NumericCast<long>(seconds * 1000 + params.timeout_usec / 1000);
+	}
+
 	unique_ptr<HTTPResponse> Put(PutRequestInfo &info) override {
-		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
-		if (state) {
-			state->RecordRequest(RequestType::PUT_REQUEST);
-			state->RecordBytesSent(info.buffer_in_len);
-		}
+		return SendBody(info, "PUT");
+	}
 
-		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
-		if (!info.headers.HasHeader("Content-Type")) {
-			curl_headers.Add("Content-Type: " + info.content_type);
-		}
-		// transform parameters
-		request_info->url = info.url;
-
-		CURLcode res;
-		{
-			CURLURLHandle url(curl_base_url);
-			SetRequestURL(url, info.url, info.path);
-
-			curl->SetOption(CURLOPT_URL, nullptr);
-			curl->SetOption(CURLOPT_CURLU, url.Get());
-
-			// Perform PUT
-			curl->SetOption(CURLOPT_CUSTOMREQUEST, "PUT");
-			// Include PUT body
-			curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
-			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, NumericCast<curl_off_t>(info.buffer_in_len));
-
-			// Apply headers
-			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
-
-			res = curl->Execute();
-			curl->SetOption(CURLOPT_CUSTOMREQUEST, nullptr);
-			curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
-			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(0));
-		}
-
-		request_info->response_code = curl->GetResponseCode();
-
-		return TransformBufferedResponseCurl(res);
+	unique_ptr<HTTPResponse> Patch(PatchRequestInfo &info) override {
+		return SendBody(info, "PATCH");
 	}
 
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &info) override {
@@ -702,6 +706,65 @@ public:
 	}
 
 private:
+	unique_ptr<HTTPResponse> SendBody(BodyRequestInfo &info, const char *method) {
+		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
+		ResetRequestInfo();
+		if (state) {
+			state->RecordRequest(info.type);
+			state->RecordBytesSent(info.buffer_in_len);
+		}
+
+		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
+		if (!info.headers.HasHeader("Content-Type")) {
+			curl_headers.Add("Content-Type: " + info.content_type);
+		}
+		const bool pieced = !info.pieces.empty();
+		// transform parameters
+		request_info->url = info.url;
+
+		CURLcode res;
+		{
+			CURLURLHandle url(curl_base_url);
+			SetRequestURL(url, info.url, info.path);
+
+			curl->SetOption(CURLOPT_URL, nullptr);
+			curl->SetOption(CURLOPT_CURLU, url.Get());
+
+			curl->SetOption(CURLOPT_CUSTOMREQUEST, method);
+			HTTPBodyReader reader(info.pieces);
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 1L);
+				curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
+				curl->SetOption(CURLOPT_READFUNCTION, ReadBody);
+				curl->SetOption(CURLOPT_READDATA, &reader);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, SeekBody);
+				curl->SetOption(CURLOPT_SEEKDATA, &reader);
+			} else {
+				curl->SetOption(CURLOPT_POSTFIELDS, const_char_ptr_cast(info.buffer_in));
+			}
+			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, NumericCast<curl_off_t>(info.buffer_in_len));
+
+			// Apply headers
+			curl->SetOption(CURLOPT_HTTPHEADER, curl_headers.Get());
+
+			res = curl->Execute();
+			curl->SetOption(CURLOPT_CUSTOMREQUEST, nullptr);
+			curl->SetOption(CURLOPT_POSTFIELDS, nullptr);
+			curl->SetOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(0));
+			if (pieced) {
+				curl->SetOption(CURLOPT_POST, 0L);
+				curl->SetOption(CURLOPT_READFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_READDATA, nullptr);
+				curl->SetOption(CURLOPT_SEEKFUNCTION, nullptr);
+				curl->SetOption(CURLOPT_SEEKDATA, nullptr);
+			}
+		}
+
+		request_info->response_code = curl->GetResponseCode();
+
+		return TransformBufferedResponseCurl(res);
+	}
+
 	static void SetRequestURL(CURLURLHandle &url, const string &request_url, const string &request_path) {
 		// A leading '//' is a network-path reference to the URL API, so set the complete URL in that case.
 		const auto &url_part = StringUtil::StartsWith(request_path, "//") ? request_url : request_path;
@@ -739,6 +802,9 @@ private:
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
 			response->request_error = curl_easy_strerror(res);
+			long request_size = 0; // NOLINT(google-runtime-int): required by curl_easy_getinfo
+			response->unsent =
+			    curl_easy_getinfo(*curl, CURLINFO_REQUEST_SIZE, &request_size) == CURLE_OK && request_size == 0;
 			return response;
 		}
 		if (include_body) {

@@ -411,28 +411,60 @@ unique_ptr<MultiFileList> S3FileSystem::GlobFilesExtended(const string &path, co
 }
 
 bool S3FileSystem::ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-                                     optional_ptr<FileOpener> opener) {
-	string trimmed_dir = directory;
-	auto sep = PathSeparator(trimmed_dir);
-	StringUtil::RTrim(trimmed_dir, sep);
-	auto glob_res = GlobFilesExtended(JoinPath(trimmed_dir, "**"), FileGlobOptions::ALLOW_EMPTY, opener);
+                                     optional_ptr<FileOpener> opener, const ListFilesOptions &options) {
+	return ListDirectory(directory, callback, opener, options, false);
+}
 
-	if (!glob_res || glob_res->GetExpandResult() == FileExpandResult::NO_FILES) {
-		return false;
-	}
-	auto base_path = trimmed_dir + sep;
-
-	for (auto file : glob_res->Files()) {
-		if (!StringUtil::StartsWith(file.path, base_path)) {
-			throw InvalidInputException(
-			    "Globbed directory \"%s\", but found file \"%s\" that does not start with base path \"%s\"", directory,
-			    file.path, base_path);
+bool S3FileSystem::ListDirectory(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
+                                 optional_ptr<FileOpener> opener, const ListFilesOptions &options, bool markers) {
+	const auto mode = options.recursive ? S3ListMode::FLAT : S3ListMode::HIERARCHICAL;
+	auto path = GetDirectoryPath(directory);
+	auto sep = PathSeparator(path);
+	FileOpenerInfo info = {path};
+	auto auth_params = S3AuthResolver::Resolve(opener, info);
+	const auto prefix = S3Url::Parse(path, auth_params).GetKey();
+	auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+	auto context = FileOpener::TryGetClientContext(opener);
+	auto child_name = [&](const string &key) {
+		if (!StringUtil::StartsWith(key, prefix)) {
+			throw IOException("Malformed S3 list response for \"%s\": \"%s\" is not below it", directory, key);
 		}
-		file.path = file.path.substr(base_path.size());
-		callback(file);
-	}
+		return key.substr(prefix.size());
+	};
 
-	return true;
+	bool listed = false;
+	string continuation_token;
+	do {
+		if (context && context->IsInterrupted()) {
+			throw InterruptException();
+		}
+		auto response = AWSListObjectV2::Request(GetEncryptionUtil(), *session, path, continuation_token, mode);
+		vector<OpenFileInfo> files;
+		AWSListObjectV2::AppendFileList(response, files, markers);
+		auto captured = session->Capture();
+		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
+		for (auto &file : files) {
+			file.path = child_name(file.path);
+			if (snapshot.region_redirected) {
+				file.extended_info->options["s3_region"] = snapshot.auth_params.GetCredentials().region;
+			}
+			listed = true;
+			callback(file);
+		}
+		for (const auto &common_prefix : response.common_prefixes) {
+			OpenFileInfo subdirectory(child_name(S3Url::Decode(common_prefix)));
+			StringUtil::RTrim(subdirectory.path, sep);
+			if (subdirectory.path.empty()) {
+				continue;
+			}
+			subdirectory.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+			subdirectory.extended_info->options.emplace("type", Value("directory"));
+			listed = true;
+			callback(subdirectory);
+		}
+		continuation_token = std::move(response.continuation_token);
+	} while (!continuation_token.empty());
+	return listed;
 }
 
 struct S3ListRequest {
@@ -512,11 +544,12 @@ S3ListObjectsV2Result AWSListObjectV2::Request(EncryptionUtil &encryption_util, 
 	return S3ListRequest::Finish(request_result.context, std::move(request_result.response), std::move(parsed_result));
 }
 
-void AWSListObjectV2::AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result) {
+void AWSListObjectV2::AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result,
+                                     bool markers) {
 	for (const auto &object : response.objects) {
 		try {
 			auto parsed_path = S3Url::Decode(object.key);
-			if (parsed_path.back() == '/') {
+			if (!markers && parsed_path.back() == '/') {
 				continue;
 			}
 			OpenFileInfo result_file(parsed_path);

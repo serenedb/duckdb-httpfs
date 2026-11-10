@@ -1,13 +1,17 @@
 #include "s3/s3fs.hpp"
 
+#include "s3/s3_list.hpp"
 #include "s3/s3_provider.hpp"
 #include "s3/s3_upload_session.hpp"
 #include "s3/s3_url.hpp"
 
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/uuid.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -104,11 +108,7 @@ string S3FileSystem::GetVersionTag(FileHandle &handle) {
 
 shared_ptr<const HTTPRequestSnapshot> S3FileHandle::CreateRequestSnapshot(const HTTPFSParams &params) const {
 	auto captured = request_session->Capture();
-	auto &s3_snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
-	return make_shared_ptr<S3RequestSnapshot>(params, s3_snapshot.auth_params, s3_snapshot.refresh_path,
-	                                          s3_snapshot.client_context, s3_snapshot.credential_refresh_enabled,
-	                                          s3_snapshot.region_redirected, s3_snapshot.credential_generation,
-	                                          s3_snapshot.multipart_upload_policy);
+	return make_shared_ptr<S3RequestSnapshot>(params, captured.snapshot->Cast<S3RequestSnapshot>());
 }
 
 S3FileHandle::~S3FileHandle() = default;
@@ -125,7 +125,10 @@ void S3FileHandle::Close() {
 void S3FileHandle::FinalizeUpload() {
 	auto upload_claim = ClaimUpload(false);
 	if (upload_claim) {
-		upload_claim.Get().Finalize();
+		auto uploaded_etag = upload_claim.Get().Finalize();
+		if (!uploaded_etag.empty()) {
+			etag = std::move(uploaded_etag);
+		}
 	}
 }
 
@@ -219,7 +222,8 @@ unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, 
 	optional<S3MultipartUploadPolicy> multipart_upload_policy;
 	if (flags.OpenForWriting()) {
 		multipart_upload_policy = auth_params.GetProvider().GetMultipartUploadPolicy();
-		upload_config = S3UploadConfig::ReadFrom(opener, *multipart_upload_policy);
+		upload_config = S3UploadConfig::ReadFrom(opener, auth_params.GetProvider());
+		upload_config.exclusive = flags.ExclusiveCreate();
 	}
 
 	return make_uniq<S3FileHandle>(*this, file, flags, std::move(request_session), auth_params, upload_config,
@@ -247,19 +251,19 @@ HTTPMetadataCacheEntry S3FileHandle::GetCacheEntry() const {
 
 void S3FileHandle::Initialize(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
 	auto context = FileOpener::TryGetClientContext(opener);
+	auto database = FileOpener::TryGetDatabase(opener);
 	auto refresh_enabled = S3RequestExecutor::CredentialRefreshEnabled(opener);
 	{
 		auto captured = request_session->Capture();
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
-		weak_ptr<ClientContext> weak_context;
+		auto replacement = make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot);
+		replacement->credential_refresh_enabled = refresh_enabled;
 		if (context && refresh_enabled) {
-			weak_context = context->shared_from_this();
+			replacement->client_context = context->shared_from_this();
+		} else if (database && refresh_enabled) {
+			replacement->database = database->shared_from_this();
 		}
-		request_session->TryPublish(
-		    captured.snapshot,
-		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot.auth_params, snapshot.refresh_path,
-		                                       std::move(weak_context), refresh_enabled, snapshot.region_redirected,
-		                                       snapshot.credential_generation, snapshot.multipart_upload_policy));
+		request_session->TryPublish(captured.snapshot, std::move(replacement));
 	}
 	HTTPFileHandle::Initialize(file, opener);
 }
@@ -285,8 +289,84 @@ FileWriteMode S3FileSystem::GetWriteMode(FileHandle &) {
 	return FileWriteMode::CONCURRENT_SEQUENTIAL;
 }
 
-FileExistence S3FileSystem::TryDirectoryExists(const string &, optional_ptr<FileOpener>, optional_ptr<ErrorData>) {
-	return FileExistence::EXISTS;
+string S3FileSystem::GetDirectoryPath(const string &directory) {
+	auto sep = PathSeparator(directory);
+	auto result = directory;
+	StringUtil::RTrim(result, sep);
+	return result + sep;
+}
+
+FileExistence S3FileSystem::TryDirectoryExists(const string &directory, optional_ptr<FileOpener> opener,
+                                               optional_ptr<ErrorData> error) {
+	try {
+		auto path = GetDirectoryPath(directory);
+		FileOpenerInfo info = {path};
+		auto auth_params = S3AuthResolver::Resolve(opener, info);
+		if (S3Url::Parse(path, auth_params).GetKey().empty()) {
+			return FileExistence::EXISTS;
+		}
+		auto marker = TryFileExists(path, opener, error);
+		if (marker != FileExistence::MISSING) {
+			return marker;
+		}
+		auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+		auto response = AWSListObjectV2::Request(GetEncryptionUtil(), *session, path, "", S3ListMode::FLAT, 1);
+		return response.objects.empty() ? FileExistence::MISSING : FileExistence::EXISTS;
+	} catch (std::exception &ex) {
+		return ClassifyExistenceFailure(ex, error);
+	}
+}
+
+void S3FileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
+	CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
+}
+
+bool S3FileSystem::CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &,
+                                           optional_ptr<FileOpener> opener) {
+	auto path = GetDirectoryPath(directory);
+	FileOpenerInfo info = {path};
+	auto auth_params = S3AuthResolver::Resolve(opener, info);
+	if (S3Url::Parse(path, auth_params).GetKey().empty()) {
+		return false;
+	}
+	static constexpr const char *CREATE_ID = "x-amz-meta-duckdb-create-id";
+	const auto create_id = UUID::ToString(UUID::GenerateRandomUUID());
+	HTTPHeaders headers;
+	headers["If-None-Match"] = "*";
+	headers[CREATE_ID] = create_id;
+	if (S3UploadConfig::ChecksumEnabled(opener, auth_params.GetProvider())) {
+		headers["x-amz-checksum-crc32c"] = S3UploadSession::EncodeChecksum(absl::crc32c_t {0});
+	}
+	auto verify = [](const S3RequestResult &result) {
+		auto &response = *result.response;
+		if (response.HasRequestError()) {
+			throw IOException("S3 request to create directory \"%s\" could not be completed: %s",
+			                  result.context.display_url, response.GetRequestError());
+		}
+		if (response.status != HTTPStatusCode::OK_200) {
+			throw S3RequestUtil::GetRequestError(result.context, response);
+		}
+	};
+	auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+	auto created = PutRequest(*session, S3RequestOperation::PUT_OBJECT, path, {}, S3RequestQuery(), std::move(headers));
+	if (created.response->status != HTTPStatusCode::PreconditionFailed_412) {
+		verify(created);
+		return true;
+	}
+	auto marker = S3RequestExecutor::RunSession(
+	    GetEncryptionUtil(), *session, S3RequestSpec {path, S3RequestOperation::HEAD_OBJECT, {}, "", "", ""},
+	    [&](S3RequestData &request_data) {
+		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
+		    return RunHeadRequest(request_data.http_url, request_data.headers, params, [&](BaseRequest &request) {
+			    return S3RequestExecutor::SendSessionRequest(*session, request_data, request);
+		    });
+	    });
+	if (marker.response->status == HTTPStatusCode::NotFound_404) {
+		return false;
+	}
+	verify(marker);
+	auto &marker_headers = marker.response->headers;
+	return marker_headers.HasHeader(CREATE_ID) && marker_headers.GetHeaderValue(CREATE_ID) == create_id;
 }
 
 bool S3FileSystem::SupportsListFilesExtended() const {
@@ -308,16 +388,25 @@ void S3FileSystem::AbortFileWrite(FileHandle &handle) {
 }
 
 void S3FileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	if (nr_bytes < 0) {
+		throw InternalException("S3 write size cannot be negative");
+	}
+	WriteAt(handle, const_data_ptr_cast(buffer), NumericCast<idx_t>(nr_bytes), location, 0, nullptr);
+}
+
+void S3FileSystem::WriteHeld(FileHandle &handle, data_ptr_t buffer, idx_t nr_bytes, idx_t location, uint32_t crc32c,
+                             unique_ptr<FileWriteHold> hold) {
+	WriteAt(handle, buffer, nr_bytes, location, crc32c, std::move(hold));
+}
+
+void S3FileSystem::WriteAt(FileHandle &handle, const_data_ptr_t data, idx_t write_size, idx_t location, uint32_t crc32c,
+                           unique_ptr<FileWriteHold> hold) {
 	auto &s3fh = handle.Cast<S3FileHandle>();
 	if (!s3fh.flags.OpenForWriting()) {
 		throw InternalException("Write called on file not opened in write mode");
 	}
-	if (nr_bytes < 0) {
-		throw InternalException("S3 write size cannot be negative");
-	}
-	auto write_size = NumericCast<idx_t>(nr_bytes);
 	auto upload_claim = s3fh.ClaimUpload(true);
-	auto write_claim = upload_claim.Get().Write(const_data_ptr_cast(buffer), write_size, location);
+	auto write_claim = upload_claim.Get().Write(data, write_size, location, absl::crc32c_t {crc32c}, std::move(hold));
 	{
 		annotated_lock_guard<annotated_mutex> guard(s3fh.cursor_mutex);
 		auto write_end = location + write_size;

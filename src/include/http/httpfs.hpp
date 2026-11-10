@@ -120,6 +120,7 @@ public:
 	bool initialized = false;
 	bool auto_fallback_to_full_file_download = true;
 	bool write_overwrite_mode = false;
+	bool metadata_only = false;
 	//! Set when opened with FILE_FLAGS_NULL_IF_NOT_EXISTS and the server answered 404
 	bool file_not_found = false;
 
@@ -158,6 +159,7 @@ public:
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+	void ReadScattered(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location) override;
 	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
@@ -185,10 +187,10 @@ public:
 
 	//! HTTP request overrides
 	virtual unique_ptr<HTTPResponse> HeadRequest(FileHandle &handle, const string &url, HTTPHeaders header_map);
-	//! GET exactly buffer_out_len bytes from the URL
+	//! GET exactly the bytes [targets] take from the URL, into them in order; a target without data skips its bytes
 	virtual unique_ptr<HTTPResponse> GetRangeRequest(FileHandle &handle, string url, HTTPHeaders header_map,
 	                                                 const HTTPReadConfig &read_config, idx_t file_offset,
-	                                                 data_ptr_t buffer_out, idx_t buffer_out_len);
+	                                                 std::span<const FileReadTarget> targets);
 	//! GET the complete file without a range
 	virtual unique_ptr<HTTPResponse> GetRequest(FileHandle &handle, string url, HTTPHeaders header_map,
 	                                            const HTTPReadConfig &read_config, CachedFileDownload &download);
@@ -210,11 +212,10 @@ protected:
 
 	//! Internal read helpers.
 	bool TryRangeRequest(FileHandle &handle, const string &url, const HTTPHeaders &header_map,
-	                     const HTTPReadConfig &read_config, idx_t file_offset, data_ptr_t buffer_out,
-	                     idx_t buffer_out_len);
-	bool ReadAt(FileHandle &handle, data_ptr_t buffer, idx_t read_size, idx_t location,
+	                     const HTTPReadConfig &read_config, idx_t file_offset, std::span<const FileReadTarget> targets);
+	bool ReadAt(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
 	            const HTTPReadConfig &read_config);
-	void ReadAtWithFallback(FileHandle &handle, data_ptr_t buffer, idx_t read_size, idx_t location,
+	void ReadAtWithFallback(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
 	                        const HTTPReadConfig &read_config);
 
 	//! Shared request runners used by subclasses with custom request setup
@@ -227,9 +228,8 @@ protected:
 	                                               const_data_ptr_t buffer_in, idx_t buffer_in_len,
 	                                               const HTTPSendCallback &send_request);
 	static unique_ptr<HTTPResponse> RunPutRequest(const string &url, const HTTPHeaders &header_map,
-	                                              HTTPFSParams &http_params, const_data_ptr_t buffer_in,
-	                                              idx_t buffer_in_len, const string &content_type,
-	                                              const HTTPSendCallback &send_request);
+	                                              HTTPFSParams &http_params, std::span<const HTTPBodyPiece> body,
+	                                              const string &content_type, const HTTPSendCallback &send_request);
 	unique_ptr<HTTPResponse> RunGetRequest(HTTPFileHandle &handle, const string &url, const HTTPHeaders &header_map,
 	                                       HTTPFSParams &http_params, const HTTPReadConfig &read_config,
 	                                       CachedFileDownload &download, const HTTPErrorCallback &get_error,
@@ -237,7 +237,7 @@ protected:
 	unique_ptr<HTTPResponse> RunGetRangeRequest(HTTPFileHandle &handle, const string &url,
 	                                            const HTTPHeaders &header_map, HTTPFSParams &http_params,
 	                                            const HTTPReadConfig &read_config, idx_t file_offset,
-	                                            data_ptr_t buffer_out, idx_t buffer_out_len,
+	                                            std::span<const FileReadTarget> targets,
 	                                            const HTTPErrorCallback &get_error,
 	                                            const HTTPSendCallback &send_request);
 
