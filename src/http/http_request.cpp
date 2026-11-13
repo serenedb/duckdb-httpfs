@@ -57,7 +57,9 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunPostRequest(const string &url, const
                                                         const HTTPSendCallback &send_request) {
 	PostRequestInfo post_request(url, header_map, http_params, buffer_in, buffer_in_len);
 	auto result = send_request(post_request);
-	buffer_out = std::move(post_request.buffer_out);
+	if (result) {
+		buffer_out = result->body;
+	}
 	return result;
 }
 
