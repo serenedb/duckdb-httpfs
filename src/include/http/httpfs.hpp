@@ -30,6 +30,8 @@ struct HTTPReadConfig {
 	string etag;
 	bool validate_etag = false;
 	bool auto_fallback_to_full_download = false;
+	//! Told of the targets a range response fills, as its bytes arrive
+	optional_ptr<FileReadProgress> progress;
 };
 
 class RangeRequestNotSupportedException {
@@ -160,6 +162,8 @@ public:
 
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	void ReadScattered(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location) override;
+	void ReadStreamed(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
+	                  FileReadProgress &progress) override;
 	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;

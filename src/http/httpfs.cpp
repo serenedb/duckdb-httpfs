@@ -501,6 +501,17 @@ void HTTPFileSystem::ReadScattered(FileHandle &handle, std::span<const FileReadT
 	ReadAtWithFallback(handle, targets, location, read_config);
 }
 
+void HTTPFileSystem::ReadStreamed(FileHandle &handle, std::span<const FileReadTarget> targets, idx_t location,
+                                  FileReadProgress &progress) {
+	auto &hfh = handle.Cast<HTTPFileHandle>();
+	if (FileReadTarget::TotalSize(targets) == 0) {
+		return;
+	}
+	auto read_config = hfh.GetReadConfig();
+	read_config.progress = &progress;
+	ReadAtWithFallback(handle, targets, location, read_config);
+}
+
 int64_t HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
 	auto &hfh = handle.Cast<HTTPFileHandle>();
 	auto read_size = NumericCast<idx_t>(nr_bytes);

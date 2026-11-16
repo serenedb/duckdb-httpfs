@@ -135,8 +135,9 @@ public:
 	                        std::function<HTTPException(const HTTPResponse &)> get_error_p,
 	                        std::function<void(const HTTPResponse &)> validate_response_p)
 	    : handle(handle_p), read_config(read_config_p), url(std::move(url_p)),
-	      range_expression(std::move(range_expression_p)), writer(targets), range_request(std::move(range_request_p)),
-	      get_error(std::move(get_error_p)), validate_response(std::move(validate_response_p)) {
+	      range_expression(std::move(range_expression_p)), writer(targets, read_config_p.progress),
+	      range_request(std::move(range_request_p)), get_error(std::move(get_error_p)),
+	      validate_response(std::move(validate_response_p)) {
 		for (auto &target : targets) {
 			buffer_out = buffer_out || target.data;
 		}
@@ -144,6 +145,7 @@ public:
 
 public:
 	bool HandleResponse(const HTTPResponse &response) {
+		writer.Reset();
 		if (response.status == HTTPStatusCode::PreconditionFailed_412 &&
 		    read_config.condition.type != HTTPReadConditionType::NONE) {
 			return false;
@@ -155,13 +157,13 @@ public:
 			return true;
 		}
 
-		writer.Reset();
 		validate_response(response);
 		if (!ValidateContentLength(response)) {
 			return false;
 		}
 		if (response.status == HTTPStatusCode::PartialContent_206) {
 			range_request.MarkSupported();
+			writer.Publish();
 		}
 		return true;
 	}
