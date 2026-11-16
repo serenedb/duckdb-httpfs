@@ -263,7 +263,7 @@ static string GetS3DeleteContentMD5(const string &body) {
 }
 
 S3RequestResult S3FileSystem::RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
-                                                     const string &body, idx_t key_count, string &result) {
+                                                     const string &body, idx_t key_count) {
 	auto payload_hash =
 	    S3RequestUtil::GetPayloadHash(GetEncryptionUtil(), const_data_ptr_cast(body.data()), body.length());
 	auto content_md5 = GetS3DeleteContentMD5(body);
@@ -282,10 +282,9 @@ S3RequestResult S3FileSystem::RunS3BulkDeleteRequest(HTTPRequestSession &session
 			        "at most %llu keys per request",
 			        key_count, maximum_key_count);
 		    }
-		    result.clear();
 		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
-		    return RunPostRequest(request_data.http_url, request_data.headers, params, result,
-		                          const_data_ptr_cast(body.data()), body.length(), [&](BaseRequest &request) {
+		    return RunPostRequest(request_data.http_url, request_data.headers, params, const_data_ptr_cast(body.data()),
+		                          body.length(), [&](BaseRequest &request) {
 			                          return S3RequestExecutor::SendSessionRequest(session, request_data, request);
 		                          });
 	    });
@@ -334,9 +333,8 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 		for (idx_t batch_start = 0; batch_start < keys.size(); batch_start += maximum_key_count) {
 			auto batch_end = MinValue<idx_t>(batch_start + maximum_key_count, keys.size());
 			auto body = S3XMLWriter::WriteDeleteObjectsRequest(keys, batch_start, batch_end);
-			string result;
 			auto request_result = RunS3BulkDeleteRequest(*delete_session, entries[batch_start].secret_lookup_path, body,
-			                                             batch_end - batch_start, result);
+			                                             batch_end - batch_start);
 			auto &res = request_result.response;
 			auto &request_context = request_result.context;
 
@@ -349,7 +347,7 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 			}
 
 			S3DeleteObjectsResult delete_result;
-			if (!S3XMLResponseParser::TryParseDeleteObjects(result, delete_result)) {
+			if (!S3XMLResponseParser::TryParseDeleteObjects(res->body, delete_result)) {
 				throw IOException("Malformed S3 bulk delete response for \"%s\"", request_context.display_url);
 			}
 			if (!delete_result.errors.empty()) {
