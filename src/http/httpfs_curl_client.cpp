@@ -9,6 +9,9 @@
 
 #include <curl/curl.h>
 #include <mutex>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <sys/stat.h>
 #include "duckdb/common/exception/http_exception.hpp"
 
@@ -230,9 +233,40 @@ private:
 
 		static void ConfigureConnection(HTTPFSCurlClient &client, const HTTPFSParams &params) {
 			client.curl->SetOption(CURLOPT_FORBID_REUSE, params.keep_alive ? 0L : 1L);
-			const bool verify_ssl = params.VerifyServerCertificate();
+			client.pinned_certificate_sha256 = params.PinnedCertificate();
+			const bool pinned = !client.pinned_certificate_sha256.empty();
+			const bool verify_ssl = !pinned && params.VerifyServerCertificate();
 			client.curl->SetOption(CURLOPT_SSL_VERIFYPEER, verify_ssl ? 1L : 0L);
 			client.curl->SetOption(CURLOPT_SSL_VERIFYHOST, verify_ssl ? 2L : 0L);
+			client.curl->SetOption(CURLOPT_SSL_CTX_FUNCTION, pinned ? PinCertificate : nullptr);
+			client.curl->SetOption(CURLOPT_SSL_CTX_DATA, pinned ? &client.pinned_certificate_sha256 : nullptr);
+		}
+
+		//! The pin is the whole trust decision: the handshake accepts the certificate with that SHA-256 and no other
+		static CURLcode PinCertificate(CURL *, void *ssl_ctx, void *pin) {
+			auto ctx = static_cast<SSL_CTX *>(ssl_ctx);
+			SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+			SSL_CTX_set_cert_verify_callback(ctx, VerifyPinnedCertificate, pin);
+			return CURLE_OK;
+		}
+
+		static int VerifyPinnedCertificate(X509_STORE_CTX *store, void *pin) {
+			auto &expected = *static_cast<const string *>(pin);
+			auto cert = X509_STORE_CTX_get0_cert(store);
+			unsigned char digest[EVP_MAX_MD_SIZE];
+			unsigned int length = 0;
+			if (cert && X509_digest(cert, EVP_sha256(), digest, &length) && expected.size() == 2 * length) {
+				static constexpr char HEX[] = "0123456789ABCDEF";
+				bool matches = true;
+				for (unsigned int i = 0; i < length; i++) {
+					matches &= expected[2 * i] == HEX[digest[i] >> 4] && expected[2 * i + 1] == HEX[digest[i] & 0x0F];
+				}
+				if (matches) {
+					return 1;
+				}
+			}
+			X509_STORE_CTX_set_error(store, X509_V_ERR_CERT_REJECTED);
+			return 0;
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
@@ -848,6 +882,8 @@ private:
 	string resolved_cert_file_path;
 	//! The deadline of the request in flight: a curl timeout after it is the caller's deadline
 	optional_idx deadline;
+	//! The certificate the handle trusts, which curl's TLS context callback reads
+	string pinned_certificate_sha256;
 };
 
 unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClient(HTTPParams &http_params, const string &proto_host_port) {
