@@ -19,6 +19,8 @@ public:
 	//! Common proxy and TLS-override settings, also enforced by the core pool.
 	HTTPTransportConfig transport_config;
 	string ca_cert_file;
+	//! The one server certificate trusted, see HTTPParams::pinned_certificate_sha256.
+	string pinned_certificate_sha256;
 	//! Effective server certificate verification setting.
 	bool verify_ssl = true;
 };
