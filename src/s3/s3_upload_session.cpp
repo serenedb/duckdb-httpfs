@@ -471,15 +471,13 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 }
 
 string S3UploadSession::InitializeMultipartUpload() {
-	string result;
 	HTTPHeaders headers;
 	if (config.checksum) {
 		headers["x-amz-checksum-algorithm"] = "CRC32C";
 		headers["x-amz-checksum-type"] = "FULL_OBJECT";
 	}
-	auto request_result =
-	    s3fs.get().PostRequest(*request_session, S3RequestOperation::CREATE_MULTIPART_UPLOAD, path, result, nullptr, 0,
-	                           S3RequestQuery({{"uploads", ""}}), std::move(headers));
+	auto request_result = s3fs.get().PostRequest(*request_session, S3RequestOperation::CREATE_MULTIPART_UPLOAD, path,
+	                                             nullptr, 0, S3RequestQuery({{"uploads", ""}}), std::move(headers));
 	auto &response = request_result.response;
 	auto &request_context = request_result.context;
 	if (response->HasRequestError()) {
@@ -493,7 +491,7 @@ string S3UploadSession::InitializeMultipartUpload() {
 	}
 
 	S3XMLResponse parsed_response;
-	if (!S3XMLResponseParser::TryParse(result, parsed_response)) {
+	if (!S3XMLResponseParser::TryParse(response->body, parsed_response)) {
 		throw S3AmbiguousUploadException(StringUtil::Format(
 		    "S3 multipart upload initialization for \"%s\" returned malformed XML; the request was not retried and "
 		    "cannot be aborted without an upload ID",
@@ -684,10 +682,9 @@ string S3UploadSession::CompleteMultipartUpload() {
 	auto completion_body = S3XMLWriter::WriteCompleteMultipartUploadRequest(snapshot.parts);
 
 	S3RequestQuery query {{"uploadId", *snapshot.upload_id}};
-	string result;
 	auto request_result = s3fs.get().PostRequest(*request_session, S3RequestOperation::COMPLETE_MULTIPART_UPLOAD, path,
-	                                             result, const_data_ptr_cast(completion_body.data()),
-	                                             completion_body.size(), query, std::move(headers));
+	                                             const_data_ptr_cast(completion_body.data()), completion_body.size(),
+	                                             query, std::move(headers));
 	auto &response = request_result.response;
 	auto &request_context = request_result.context;
 	if (response->HasRequestError()) {
@@ -703,7 +700,7 @@ string S3UploadSession::CompleteMultipartUpload() {
 	}
 
 	S3XMLResponse parsed_response;
-	if (!S3XMLResponseParser::TryParse(result, parsed_response)) {
+	if (!S3XMLResponseParser::TryParse(response->body, parsed_response)) {
 		throw S3AmbiguousUploadException(StringUtil::Format(
 		    "S3 multipart upload completion for \"%s\" returned malformed XML; the request was not retried or aborted",
 		    request_context.display_url));

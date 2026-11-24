@@ -39,18 +39,19 @@ HTTPFSConnectionConfig HTTPFSConnectionConfig::Create(const HTTPFSParams &params
 	HTTPFSConnectionConfig result;
 	result.transport_config = HTTPTransportConfig(params);
 	result.ca_cert_file = params.ca_cert_file;
+	result.pinned_certificate_sha256 = params.PinnedCertificate();
 	result.verify_ssl = params.VerifyServerCertificate();
 	return result;
 }
 
 bool HTTPFSConnectionConfig::Matches(const HTTPFSParams &params) const {
 	return transport_config.Matches(params) && ca_cert_file == params.ca_cert_file &&
-	       verify_ssl == params.VerifyServerCertificate();
+	       pinned_certificate_sha256 == params.PinnedCertificate() && verify_ssl == params.VerifyServerCertificate();
 }
 
 bool HTTPFSConnectionConfig::operator==(const HTTPFSConnectionConfig &other) const {
 	return transport_config == other.transport_config && ca_cert_file == other.ca_cert_file &&
-	       verify_ssl == other.verify_ssl;
+	       pinned_certificate_sha256 == other.pinned_certificate_sha256 && verify_ssl == other.verify_ssl;
 }
 
 void HTTPFSUtil::SetTransportReuseDomain(HTTPFSParams &params) {

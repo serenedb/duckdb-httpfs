@@ -1,12 +1,17 @@
 #include "http/httpfs_client.hpp"
 #include "http/http_state.hpp"
+#include "duckdb/common/time_point.hpp"
 #include "duckdb/common/thread_annotation/thread_annotation.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 
 #include <curl/curl.h>
 #include <mutex>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <sys/stat.h>
 #include "duckdb/common/exception/http_exception.hpp"
 
@@ -240,17 +245,44 @@ private:
 
 		static void ConfigureConnection(HTTPFSCurlClient &client, const HTTPFSParams &params) {
 			client.curl->SetOption(CURLOPT_FORBID_REUSE, params.keep_alive ? 0L : 1L);
-			const bool verify_ssl = params.VerifyServerCertificate();
+			client.pinned_certificate_sha256 = params.PinnedCertificate();
+			const bool pinned = !client.pinned_certificate_sha256.empty();
+			const bool verify_ssl = !pinned && params.VerifyServerCertificate();
 			client.curl->SetOption(CURLOPT_SSL_VERIFYPEER, verify_ssl ? 1L : 0L);
 			client.curl->SetOption(CURLOPT_SSL_VERIFYHOST, verify_ssl ? 2L : 0L);
+			client.curl->SetOption(CURLOPT_SSL_CTX_FUNCTION, pinned ? PinCertificate : nullptr);
+			client.curl->SetOption(CURLOPT_SSL_CTX_DATA, pinned ? &client.pinned_certificate_sha256 : nullptr);
+		}
+
+		//! The pin is the whole trust decision: the handshake accepts the certificate with that SHA-256 and no other
+		static CURLcode PinCertificate(CURL *, void *ssl_ctx, void *pin) {
+			auto ctx = static_cast<SSL_CTX *>(ssl_ctx);
+			SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+			SSL_CTX_set_cert_verify_callback(ctx, VerifyPinnedCertificate, pin);
+			return CURLE_OK;
+		}
+
+		static int VerifyPinnedCertificate(X509_STORE_CTX *store, void *pin) {
+			auto &expected = *static_cast<const string *>(pin);
+			auto cert = X509_STORE_CTX_get0_cert(store);
+			unsigned char digest[EVP_MAX_MD_SIZE];
+			unsigned int length = 0;
+			if (cert && X509_digest(cert, EVP_sha256(), digest, &length) && expected.size() == 2 * length) {
+				static constexpr char HEX[] = "0123456789ABCDEF";
+				bool matches = true;
+				for (unsigned int i = 0; i < length; i++) {
+					matches &= expected[2 * i] == HEX[digest[i] >> 4] && expected[2 * i + 1] == HEX[digest[i] & 0x0F];
+				}
+				if (matches) {
+					return 1;
+				}
+			}
+			X509_STORE_CTX_set_error(store, X509_V_ERR_CERT_REJECTED);
+			return 0;
 		}
 
 		static void ConfigureTimeoutsAndCallbacks(HTTPFSCurlClient &client, const HTTPFSParams &params) {
-			client.curl->SetOption(CURLOPT_CONNECTTIMEOUT_MS, NumericCast<long>(MinValue<uint64_t>(
-			                                                      params.connect_timeout_ms, params.timeout * 1000)));
-			client.curl->SetOption(CURLOPT_TIMEOUT, 0L);
 			client.curl->SetOption(CURLOPT_LOW_SPEED_LIMIT, 1024L);
-			client.curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
 			client.curl->SetOption(CURLOPT_ACCEPT_ENCODING, nullptr);
 			client.curl->SetOption(CURLOPT_FOLLOWLOCATION, params.follow_location ? 1L : 0L);
 			client.curl->SetOption(CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
@@ -469,7 +501,7 @@ public:
 
 	unique_ptr<HTTPResponse> Get(GetRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::GET_REQUEST);
 		}
@@ -507,7 +539,7 @@ public:
 
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::HEAD_REQUEST);
 		}
@@ -543,7 +575,7 @@ public:
 
 	unique_ptr<HTTPResponse> Delete(DeleteRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::DELETE_REQUEST);
 		}
@@ -576,7 +608,7 @@ public:
 	}
 
 	unique_ptr<HTTPResponse> Options(OptionsRequestInfo &info) override {
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::OPTIONS_REQUEST);
 		}
@@ -605,7 +637,7 @@ public:
 
 	unique_ptr<HTTPResponse> Post(PostRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(RequestType::POST_REQUEST);
 			state->RecordBytesSent(info.buffer_in_len);
@@ -647,8 +679,6 @@ public:
 		}
 
 		request_info->response_code = curl->GetResponseCode();
-		info.buffer_out = request_info->body;
-
 		return TransformBufferedResponseCurl(res);
 	}
 
@@ -686,7 +716,7 @@ public:
 private:
 	unique_ptr<HTTPResponse> SendBody(BodyRequestInfo &info, const char *method) {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
-		ResetRequestInfo();
+		BeginRequest(info.params);
 		if (state) {
 			state->RecordRequest(info.type);
 			state->RecordBytesSent(info.buffer_in_len);
@@ -743,6 +773,26 @@ private:
 		return TransformBufferedResponseCurl(res);
 	}
 
+	//! The time the request has until the caller's deadline, rounded up so curl stops it no earlier, and at
+	//! least 1ms so a missed deadline fails at once. 0 means no limit.
+	static long TimeUntilDeadline(optional_idx deadline) { // NOLINT(google-runtime-int): curl takes a long
+		if (!deadline.IsValid()) {
+			return 0L;
+		}
+		auto remaining_ms = absl::ToInt64Milliseconds(absl::Ceil(TimePoint::Until(deadline), absl::Milliseconds(1)));
+		return remaining_ms > 0 ? NumericCast<long>(remaining_ms) : 1L;
+	}
+
+	//! Each request sets its own limits: a reused handle keeps the options of the request before it
+	void BeginRequest(const HTTPParams &params) {
+		ResetRequestInfo();
+		deadline = params.deadline;
+		curl->SetOption(CURLOPT_CONNECTTIMEOUT_MS,
+		                NumericCast<long>(MinValue<uint64_t>(params.connect_timeout_ms, params.timeout * 1000)));
+		curl->SetOption(CURLOPT_LOW_SPEED_TIME, params.timeout);
+		curl->SetOption(CURLOPT_TIMEOUT_MS, TimeUntilDeadline(deadline));
+	}
+
 	static void SetRequestURL(CURLURLHandle &url, const string &request_url, const string &request_path) {
 		// A leading '//' is a network-path reference to the URL API, so set the complete URL in that case.
 		const auto &url_part = StringUtil::StartsWith(request_path, "//") ? request_url : request_path;
@@ -779,6 +829,10 @@ private:
 		auto status_code = HTTPUtil::ToStatusCode(request_info->response_code);
 		auto response = make_uniq<HTTPResponse>(status_code);
 		if (res != CURLcode::CURLE_OK) {
+			if (res == CURLE_OPERATION_TIMEDOUT && deadline.IsValid() &&
+			    static_cast<idx_t>(TimePoint::Now()) >= deadline.GetIndex()) {
+				ClientContext::ThrowDeadlineExceeded();
+			}
 			response->request_error = curl_easy_strerror(res);
 			long request_size = 0; // NOLINT(google-runtime-int): required by curl_easy_getinfo
 			response->unsent =
@@ -870,6 +924,10 @@ private:
 	//! Reuse domain used to configure the current connection.
 	optional_idx transport_reuse_domain;
 	string resolved_cert_file_path;
+	//! The deadline of the request in flight: a curl timeout after it is the caller's deadline
+	optional_idx deadline;
+	//! The certificate the handle trusts, which curl's TLS context callback reads
+	string pinned_certificate_sha256;
 };
 
 unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClient(HTTPParams &http_params, const string &proto_host_port) {
