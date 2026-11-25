@@ -96,7 +96,7 @@ physical_plan	<REGEX>:.*PARQUET_SCAN.*Filter:.*a *< *4.*File Filters:.* \(?CAST\
 query II
 EXPLAIN select a from read_csv_auto('s3://test-bucket/hive-partitioning/filter-test-csv/*/*.csv', HIVE_PARTITIONING=1, HIVE_TYPES_AUTOCAST=0) where c=500 and a < 4;
 ----
-physical_plan	<REGEX>:.*FILTER.*a *< *4.*READ_CSV_AUTO.*File Filters:.* \(?CAST\(c AS.*INTEGER\) = 500\)?.*
+physical_plan	<REGEX>:.*READ_CSV_AUTO.*Filter:.*a *< *4.*File Filters:.* \(?CAST\(c AS.*INTEGER\) = 500\)?.*
 
 statement ok
 COPY (SELECT * FROM t1) TO 's3://test-bucket/hive-partitioning/filter-test-parquet' (FORMAT PARQUET, PARTITION_BY c, OVERWRITE);
