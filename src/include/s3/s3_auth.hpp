@@ -38,6 +38,7 @@ struct S3AuthCredentials {
 	string secret_access_key;
 	string session_token;
 	string oauth2_bearer_token;
+	bool from_chain = false;
 
 	bool operator==(const S3AuthCredentials &other) const;
 };
@@ -79,6 +80,7 @@ struct S3AuthConfig {
 
 	//! Authentication
 	S3AuthCredentials credentials;
+	bool use_credential_chain = false;
 
 	//! Endpoint and URL behavior
 	string endpoint;
@@ -133,6 +135,10 @@ public:
 		return setting_scope;
 	}
 
+	bool UsesEnvironment() const {
+		return use_env_variables_for_secret_settings;
+	}
+
 private:
 	bool use_env_variables_for_secret_settings;
 	KeyValueSecretReader reader;
@@ -156,6 +162,7 @@ public:
 		return refresh_identity;
 	}
 	S3AuthParams WithRegion(string region) const;
+	S3AuthParams WithCurrentCredentials() const;
 	bool operator==(const S3AuthParams &other) const;
 
 private:
@@ -190,9 +197,6 @@ public:
 public:
 	static constexpr const char *REGION_ENV_VAR = "AWS_REGION";
 	static constexpr const char *DEFAULT_REGION_ENV_VAR = "AWS_DEFAULT_REGION";
-	static constexpr const char *ACCESS_KEY_ENV_VAR = "AWS_ACCESS_KEY_ID";
-	static constexpr const char *SECRET_KEY_ENV_VAR = "AWS_SECRET_ACCESS_KEY";
-	static constexpr const char *SESSION_TOKEN_ENV_VAR = "AWS_SESSION_TOKEN";
 	static constexpr const char *DUCKDB_ENDPOINT_ENV_VAR = "DUCKDB_S3_ENDPOINT";
 	static constexpr const char *DUCKDB_USE_SSL_ENV_VAR = "DUCKDB_S3_USE_SSL";
 	static constexpr const char *DUCKDB_KMS_KEY_ID_ENV_VAR = "DUCKDB_S3_KMS_KEY_ID";

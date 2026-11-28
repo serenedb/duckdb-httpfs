@@ -372,10 +372,15 @@ static HTTPHeaders CreateConfiguredS3Headers(const HTTPConfiguredHeaders &config
 
 HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const ParsedS3Url &parsed_url,
                                          S3RequestOperation operation, const S3RequestQuery &query,
-                                         const S3AuthParams &auth_params, string date_now, string datetime_now,
+                                         const S3AuthParams &stored_auth_params, string date_now, string datetime_now,
                                          string payload_hash, string content_type, string content_md5,
                                          const HTTPConfiguredHeaders &configured_headers,
                                          const HTTPReadCondition &read_condition, const HTTPHeaders &extra_headers) {
+	std::optional<S3AuthParams> renewed;
+	if (stored_auth_params.GetCredentials().from_chain) {
+		renewed = stored_auth_params.WithCurrentCredentials();
+	}
+	const auto &auth_params = renewed ? *renewed : stored_auth_params;
 	const auto &host = parsed_url.GetHost();
 	auto &operation_info = GetOperationInfo(operation);
 	const auto &encoded_path = operation_info.target == S3RequestTarget::BUCKET ? parsed_url.GetEncodedBucketPath()
