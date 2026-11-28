@@ -103,6 +103,7 @@ public:
 	bool OnDiskFile(FileHandle &handle) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	void RemoveFiles(const vector<string> &filenames, optional_ptr<FileOpener> opener = nullptr) override;
+	void CopyFile(const string &source, const string &target, optional_ptr<FileOpener> opener = nullptr) override;
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	bool CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &options,
 	                             optional_ptr<FileOpener> opener = nullptr) override;
