@@ -4,6 +4,7 @@
 #include "s3/s3_provider.hpp"
 #include "s3/s3_upload_session.hpp"
 #include "s3/s3_url.hpp"
+#include "s3/s3_xml_response.hpp"
 
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -319,6 +320,38 @@ FileExistence S3FileSystem::TryDirectoryExists(const string &directory, optional
 		return response.objects.empty() ? FileExistence::MISSING : FileExistence::EXISTS;
 	} catch (std::exception &ex) {
 		return ClassifyExistenceFailure(ex, error);
+	}
+}
+
+void S3FileSystem::CopyFile(const string &source, const string &target, optional_ptr<FileOpener> opener) {
+	if (!CanHandleFile(target)) {
+		throw NotImplementedException("%s: CopyFile copies \"%s\" only to an object of the same store, not to \"%s\"",
+		                              GetName(), source, target);
+	}
+	EraseGlobalCacheEntry(target);
+	FileOpenerInfo info = {target};
+	auto auth_params = S3AuthResolver::Resolve(opener, info);
+	const auto parsed_source = S3Url::Parse(source, auth_params);
+	const auto gcs = auth_params.GetProvider().GetType() == S3ProviderType::GCS;
+	HTTPHeaders headers;
+	headers[gcs ? "x-goog-copy-source" : "x-amz-copy-source"] =
+	    "/" + parsed_source.GetBucket() + "/" + S3Url::Encode(parsed_source.GetKey(), S3URLEncodeMode::PATH);
+	if (const auto &key = auth_params.GetRequestOptions().sse_customer_key) {
+		headers["x-amz-copy-source-server-side-encryption-customer-algorithm"] = "AES256";
+		headers["x-amz-copy-source-server-side-encryption-customer-key"] = key->GetKey();
+		headers["x-amz-copy-source-server-side-encryption-customer-key-md5"] = key->GetKeyMD5();
+	}
+	auto session = S3RequestExecutor::CreateSession(opener, target, auth_params);
+	auto copied =
+	    PutRequest(*session, S3RequestOperation::COPY_OBJECT, target, {}, S3RequestQuery(), std::move(headers));
+	auto &response = *copied.response;
+	if (response.HasRequestError()) {
+		throw IOException("S3 copy request for \"%s\" could not be completed: %s", copied.context.display_url,
+		                  response.GetRequestError());
+	}
+	S3XMLError error;
+	if (response.status != HTTPStatusCode::OK_200 || S3XMLResponseParser::TryParseError(response.body, error)) {
+		throw S3RequestUtil::GetRequestError(copied.context, response);
 	}
 }
 

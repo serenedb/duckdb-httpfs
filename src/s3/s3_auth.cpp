@@ -1,5 +1,6 @@
 #include "s3/s3_auth.hpp"
 
+#include "s3/aws_credential_chain.hpp"
 #include "s3/s3_url.hpp"
 
 #include "duckdb/common/crypto/md5.hpp"
@@ -53,11 +54,9 @@ void AWSEnvironmentCredentialsProvider::SetExtensionOptionValue(const Identifier
 void AWSEnvironmentCredentialsProvider::SetAll() {
 	this->SetExtensionOptionValue("s3_region", DEFAULT_REGION_ENV_VAR);
 	this->SetExtensionOptionValue("s3_region", REGION_ENV_VAR);
-	this->SetExtensionOptionValue("s3_access_key_id", ACCESS_KEY_ENV_VAR);
-	this->SetExtensionOptionValue("s3_secret_access_key", SECRET_KEY_ENV_VAR);
-	this->SetExtensionOptionValue("s3_session_token", SESSION_TOKEN_ENV_VAR);
 	this->SetExtensionOptionValue("s3_endpoint", DUCKDB_ENDPOINT_ENV_VAR);
 	this->SetExtensionOptionValue("s3_use_ssl", DUCKDB_USE_SSL_ENV_VAR);
+	this->SetExtensionOptionValue("s3_url_style", DUCKDB_URL_STYLE_ENV_VAR);
 	this->SetExtensionOptionValue("s3_kms_key_id", DUCKDB_KMS_KEY_ID_ENV_VAR);
 	this->SetExtensionOptionValue("s3_requester_pays", DUCKDB_REQUESTER_PAYS_ENV_VAR);
 }
@@ -67,7 +66,7 @@ S3AuthParams::S3AuthParams() = default;
 bool S3AuthCredentials::operator==(const S3AuthCredentials &other) const {
 	return region == other.region && access_key_id == other.access_key_id &&
 	       secret_access_key == other.secret_access_key && session_token == other.session_token &&
-	       oauth2_bearer_token == other.oauth2_bearer_token;
+	       oauth2_bearer_token == other.oauth2_bearer_token && from_chain == other.from_chain;
 }
 
 bool S3AuthURLParams::operator==(const S3AuthURLParams &other) const {
@@ -110,9 +109,20 @@ S3AuthConfig S3AuthResolver::ReadConfig(S3KeyValueReader &secret_reader, const s
 	auto &credentials = config.credentials;
 	auto &request_options = config.request_options;
 	secret_reader.TryGetSecretKeyOrSetting("region", "s3_region", credentials.region);
-	secret_reader.TryGetSecretKeyOrSetting("key_id", "s3_access_key_id", credentials.access_key_id);
-	secret_reader.TryGetSecretKeyOrSetting("secret", "s3_secret_access_key", credentials.secret_access_key);
+	const bool key_configured = static_cast<bool>(
+	    secret_reader.TryGetSecretKeyOrSetting("key_id", "s3_access_key_id", credentials.access_key_id));
+	const bool secret_configured = static_cast<bool>(
+	    secret_reader.TryGetSecretKeyOrSetting("secret", "s3_secret_access_key", credentials.secret_access_key));
+	config.use_credential_chain = !key_configured && !secret_configured && secret_reader.UsesEnvironment();
 	secret_reader.TryGetSecretKeyOrSetting("session_token", "s3_session_token", credentials.session_token);
+	if (config.use_credential_chain && config.route.type != S3ProviderType::S3) {
+		config.use_credential_chain = false;
+		if (auto environment = AWSCredentialChain::Environment()) {
+			credentials.access_key_id = std::move(environment->access_key_id);
+			credentials.secret_access_key = std::move(environment->secret_access_key);
+			credentials.session_token = std::move(environment->session_token);
+		}
+	}
 	secret_reader.TryGetSecretKeyOrSetting("use_ssl", "s3_use_ssl", config.use_ssl);
 	secret_reader.TryGetSecretKeyOrSetting("kms_key_id", "s3_kms_key_id", request_options.kms_key_id);
 	string sse_c_key;
@@ -185,6 +195,16 @@ S3AuthParams S3AuthResolver::Resolve(S3AuthConfig config, const string &file_pat
 		}
 	}
 
+	if (config.route.type == S3ProviderType::S3 && config.use_credential_chain && credentials.access_key_id.empty() &&
+	    credentials.secret_access_key.empty() && credentials.oauth2_bearer_token.empty()) {
+		if (auto chain = AWSCredentialChain::Get().Current()) {
+			credentials.access_key_id = chain->access_key_id;
+			credentials.secret_access_key = chain->secret_access_key;
+			credentials.session_token = chain->session_token;
+			credentials.from_chain = true;
+		}
+	}
+
 	auto style = S3AuthURLParams::ParseStyle(config.url_style);
 	if (config.route.type == S3ProviderType::GCS && request_options.requester_pays &&
 	    request_options.user_project.empty()) {
@@ -241,6 +261,21 @@ S3AuthParams S3AuthResolver::Resolve(S3AuthConfig config, const string &file_pat
 			throw InvalidInputException("SSE_C_KEY requires both KEY_ID and SECRET for signed S3 requests");
 		}
 	}
+	return result;
+}
+
+S3AuthParams S3AuthParams::WithCurrentCredentials() const {
+	auto result = *this;
+	if (!credentials.from_chain) {
+		return result;
+	}
+	auto chain = AWSCredentialChain::Get().Current();
+	if (!chain) {
+		throw IOException("The AWS credentials of this process are gone");
+	}
+	result.credentials.access_key_id = chain->access_key_id;
+	result.credentials.secret_access_key = chain->secret_access_key;
+	result.credentials.session_token = chain->session_token;
 	return result;
 }
 

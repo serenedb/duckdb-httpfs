@@ -82,7 +82,7 @@ const string &S3RequestQuery::CanonicalQuery() const {
 }
 
 const S3RequestOperationInfo &S3RequestUtil::GetOperationInfo(S3RequestOperation operation) {
-	static const array<S3RequestOperationInfo, 10> OPERATION_INFO = {
+	static const array<S3RequestOperationInfo, 11> OPERATION_INFO = {
 	    S3RequestOperationInfo {RequestType::HEAD_REQUEST, S3RequestTarget::OBJECT, "checking", true, false, false,
 	                            true},
 	    S3RequestOperationInfo {RequestType::GET_REQUEST, S3RequestTarget::OBJECT, "reading", true, false, false, true},
@@ -101,7 +101,9 @@ const S3RequestOperationInfo &S3RequestUtil::GetOperationInfo(S3RequestOperation
 	    S3RequestOperationInfo {RequestType::POST_REQUEST, S3RequestTarget::OBJECT, "completing multipart upload for",
 	                            false, true, false, true},
 	    S3RequestOperationInfo {RequestType::DELETE_REQUEST, S3RequestTarget::OBJECT, "aborting multipart upload for",
-	                            true, false, false, false}};
+	                            true, false, false, false},
+	    S3RequestOperationInfo {RequestType::PUT_REQUEST, S3RequestTarget::OBJECT, "copying to", true, false, true,
+	                            true}};
 	auto index = static_cast<idx_t>(operation);
 	if (index >= OPERATION_INFO.size()) {
 		throw InternalException("Unknown S3 request operation");
@@ -123,7 +125,8 @@ public:
 	static bool Contains(const string &name, S3ProviderType provider_type) {
 		return Headers().find(name) != Headers().end() ||
 		       (provider_type == S3ProviderType::GCS && (StringUtil::CIEquals(name, "x-goog-user-project") ||
-		                                                 StringUtil::CIEquals(name, "x-goog-if-generation-match")));
+		                                                 StringUtil::CIEquals(name, "x-goog-if-generation-match") ||
+		                                                 StringUtil::CIEquals(name, "x-goog-copy-source")));
 	}
 
 	static string CanonicalName(const string &name, S3ProviderType provider_type) {
@@ -155,6 +158,13 @@ private:
 		    {"x-amz-server-side-encryption-customer-algorithm", "x-amz-server-side-encryption-customer-algorithm"},
 		    {"x-amz-server-side-encryption-customer-key", "x-amz-server-side-encryption-customer-key"},
 		    {"x-amz-server-side-encryption-customer-key-md5", "x-amz-server-side-encryption-customer-key-md5"},
+		    {"x-amz-copy-source", "x-amz-copy-source"},
+		    {"x-amz-copy-source-server-side-encryption-customer-algorithm",
+		     "x-amz-copy-source-server-side-encryption-customer-algorithm"},
+		    {"x-amz-copy-source-server-side-encryption-customer-key",
+		     "x-amz-copy-source-server-side-encryption-customer-key"},
+		    {"x-amz-copy-source-server-side-encryption-customer-key-md5",
+		     "x-amz-copy-source-server-side-encryption-customer-key-md5"},
 		};
 		return headers;
 	}
@@ -372,10 +382,15 @@ static HTTPHeaders CreateConfiguredS3Headers(const HTTPConfiguredHeaders &config
 
 HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const ParsedS3Url &parsed_url,
                                          S3RequestOperation operation, const S3RequestQuery &query,
-                                         const S3AuthParams &auth_params, string date_now, string datetime_now,
+                                         const S3AuthParams &stored_auth_params, string date_now, string datetime_now,
                                          string payload_hash, string content_type, string content_md5,
                                          const HTTPConfiguredHeaders &configured_headers,
                                          const HTTPReadCondition &read_condition, const HTTPHeaders &extra_headers) {
+	std::optional<S3AuthParams> renewed;
+	if (stored_auth_params.GetCredentials().from_chain) {
+		renewed = stored_auth_params.WithCurrentCredentials();
+	}
+	const auto &auth_params = renewed ? *renewed : stored_auth_params;
 	const auto &host = parsed_url.GetHost();
 	auto &operation_info = GetOperationInfo(operation);
 	const auto &encoded_path = operation_info.target == S3RequestTarget::BUCKET ? parsed_url.GetEncodedBucketPath()
